@@ -454,3 +454,26 @@ class TestTrustChainCommunity(TestBase):
         # The other node should now have the self-signed block
         self.assertIsNotNone(self.nodes[0].overlay.persistence.get(my_pubkey, 1))
         self.assertIsNotNone(self.nodes[1].overlay.persistence.get(my_pubkey, 1))
+
+    @twisted_wrapper
+    def test_half_block_link_block(self):
+        """
+        Test creating and disseminating a link (half) block
+        """
+        yield self.introduce_nodes()
+
+        source_peer_pubkey = self.nodes[0].my_peer.public_key.key_to_bin()
+        # link_peer_pubkey = self.nodes[1].network.verified_peers[0].public_key.key_to_bin()
+        # link_peer_pubkey = self.nodes[1].my_peer.public_key.key_to_bin()
+
+        # Create an initial source block with no counterpary
+        yield self.nodes[0].overlay.create_source_no_counterparty('test', {})
+        yield self.deliver_messages()
+
+        # Check the dissemination
+        block = self.nodes[1].overlay.persistence.get(source_peer_pubkey, 1)
+        self.assertIsNotNone(self.nodes[0].overlay.persistence.get(source_peer_pubkey, 1))
+        self.assertIsNotNone(block)
+
+        # Create a Link Block
+        self.nodes[1].overlay.create_link(block, block_type='link', additional_info={'a': 1, 'b': 2})

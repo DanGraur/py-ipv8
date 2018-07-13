@@ -376,7 +376,7 @@ class TrustChainBlock(object):
         self.signature = self.crypto.create_signature(key, self.pack(signature=False))
 
     @classmethod
-    def create(cls, block_type, transaction, database, public_key, link=None, link_pk=None):
+    def create(cls, block_type, transaction, database, public_key, link=None, additional_info=None, link_pk=None):
         """
         Create an empty next block.
         :param block_type: the type of the block to be constructed
@@ -384,14 +384,18 @@ class TrustChainBlock(object):
         :param database: the database to use as information source
         :param public_key: the public key to use for this block
         :param link: optionally create the block as a linked block to this block
+        :param additional_info: Additional information, which has a higher priority that the
+               transaction when link exists
         :param link_pk: the public key of the counterparty in this transaction
         :return: A newly created block
         """
         blk = database.get_latest(public_key)
         ret = cls()
         if link:
+            import json
+
             ret.type = link.type
-            ret.transaction = link.transaction
+            ret.transaction = link.transaction if additional_info is None else json.dumps(additional_info)
             ret.link_public_key = link.public_key
             ret.link_sequence_number = link.sequence_number
         else:
