@@ -456,17 +456,6 @@ class TestTrustChainCommunity(TestBase):
         self.assertIsNotNone(self.nodes[0].overlay.persistence.get(my_pubkey, 1))
         self.assertIsNotNone(self.nodes[1].overlay.persistence.get(my_pubkey, 1))
 
-    def print_all_blocks(self, string, peer):
-        from base64 import b64encode
-        print "####", string, "####"
-
-        for block in peer.overlay.persistence.get_all_blocks():
-            print "*** NEW BLOCK ***"
-            print "PK:", b64encode(block.public_key)
-            print "Seq Nr:", block.sequence_number
-            print "Link PK:", b64encode(block.link_public_key)
-            print "Link Seq Nr:", block.link_sequence_number
-
     @twisted_wrapper
     def test_half_block_link_block(self):
         """
@@ -493,5 +482,10 @@ class TestTrustChainCommunity(TestBase):
         yield self.deliver_messages()
 
         # Check the dissemination of the link block
-        self.assertIsNotNone(self.nodes[1].overlay.persistence.get(counter_peer_pubkey, 1))
-        self.assertIsNotNone(self.nodes[0].overlay.persistence.get(counter_peer_pubkey, 1))
+        block_node_0 = self.nodes[0].overlay.persistence.get(counter_peer_pubkey, 1)
+        block_node_1 = self.nodes[1].overlay.persistence.get(counter_peer_pubkey, 1)
+
+        self.assertIsNotNone(block_node_0)
+        self.assertIsNotNone(block_node_1)
+        self.assertEqual(block_node_0.transaction, '{"a": 1, "b": 2}')
+        self.assertEqual(block_node_1.transaction, '{"a": 1, "b": 2}')
