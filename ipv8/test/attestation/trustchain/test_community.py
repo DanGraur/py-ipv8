@@ -1,11 +1,11 @@
-from ....attestation.trustchain.block import TrustChainBlock
-from ....attestation.trustchain.caches import CrawlRequestCache
-from ....attestation.trustchain.community import TrustChainCommunity, UNKNOWN_SEQ
-from ....attestation.trustchain.listener import BlockListener
 from ...attestation.trustchain.test_block import TestBlock
 from ...base import TestBase
 from ...mocking.ipv8 import MockIPv8
 from ...util import twisted_wrapper
+from ....attestation.trustchain.block import TrustChainBlock
+from ....attestation.trustchain.caches import CrawlRequestCache
+from ....attestation.trustchain.community import TrustChainCommunity, UNKNOWN_SEQ
+from ....attestation.trustchain.listener import BlockListener
 
 
 class DummyBlock(TrustChainBlock):
@@ -59,7 +59,8 @@ class TestTrustChainCommunity(TestBase):
 
         for node_nr in [0, 1]:
             self.assertIsNotNone(self.nodes[node_nr].overlay.persistence.get(my_pubkey, 1))
-            self.assertEqual(self.nodes[node_nr].overlay.persistence.get(my_pubkey, 1).link_sequence_number, UNKNOWN_SEQ)
+            self.assertEqual(self.nodes[node_nr].overlay.persistence.get(my_pubkey, 1).link_sequence_number,
+                             UNKNOWN_SEQ)
 
     @twisted_wrapper
     def test_sign_full_block(self):
@@ -455,25 +456,42 @@ class TestTrustChainCommunity(TestBase):
         self.assertIsNotNone(self.nodes[0].overlay.persistence.get(my_pubkey, 1))
         self.assertIsNotNone(self.nodes[1].overlay.persistence.get(my_pubkey, 1))
 
+    def print_all_blocks(self, string, peer):
+        from base64 import b64encode
+        print "####", string, "####"
+
+        for block in peer.overlay.persistence.get_all_blocks():
+            print "*** NEW BLOCK ***"
+            print "PK:", b64encode(block.public_key)
+            print "Seq Nr:", block.sequence_number
+            print "Link PK:", b64encode(block.link_public_key)
+            print "Link Seq Nr:", block.link_sequence_number
+
     @twisted_wrapper
     def test_half_block_link_block(self):
         """
-        Test creating and disseminating a link (half) block
+        Test creating and disseminating a link block
         """
         yield self.introduce_nodes()
 
         source_peer_pubkey = self.nodes[0].my_peer.public_key.key_to_bin()
-        # link_peer_pubkey = self.nodes[1].network.verified_peers[0].public_key.key_to_bin()
-        # link_peer_pubkey = self.nodes[1].my_peer.public_key.key_to_bin()
+        counter_peer_pubkey = self.nodes[1].my_peer.public_key.key_to_bin()
 
         # Create an initial source block with no counterpary
         yield self.nodes[0].overlay.create_source_no_counterparty('test', {})
         yield self.deliver_messages()
 
-        # Check the dissemination
-        block = self.nodes[1].overlay.persistence.get(source_peer_pubkey, 1)
+        # Check the dissemination of the no counterparty source block
         self.assertIsNotNone(self.nodes[0].overlay.persistence.get(source_peer_pubkey, 1))
+        block = self.nodes[1].overlay.persistence.get(source_peer_pubkey, 1)
         self.assertIsNotNone(block)
 
         # Create a Link Block
-        self.nodes[1].overlay.create_link(block, block_type='link', additional_info={'a': 1, 'b': 2})
+        yield self.nodes[1].overlay.create_link(block,
+                                                block_type='link',
+                                                additional_info={'a': 1, 'b': 2})
+        yield self.deliver_messages()
+
+        # Check the dissemination of the link block
+        self.assertIsNotNone(self.nodes[1].overlay.persistence.get(counter_peer_pubkey, 1))
+        self.assertIsNotNone(self.nodes[0].overlay.persistence.get(counter_peer_pubkey, 1))

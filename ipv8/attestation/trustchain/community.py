@@ -10,7 +10,7 @@ from threading import RLock
 from twisted.internet import reactor
 from twisted.internet.defer import Deferred, succeed, fail
 
-from .block import TrustChainBlock, ValidationResult, EMPTY_PK, GENESIS_SEQ, UNKNOWN_SEQ
+from .block import TrustChainBlock, ValidationResult, EMPTY_PK, GENESIS_SEQ, UNKNOWN_SEQ, ANY_COUNTERPARTY_PK
 from .caches import CrawlRequestCache, HalfBlockSignCache, IntroCrawlTimeout
 from .database import TrustChainDB
 from ...deprecated.community import Community
@@ -172,22 +172,25 @@ class TrustChainCommunity(Community):
         :param transaction: A string describing the interaction in this block
         :return: None
         """
-        self.sign_block(peer=None, block_type=block_type, transaction=transaction)
+        self.sign_block(peer=None, public_key=ANY_COUNTERPARTY_PK, block_type=block_type, transaction=transaction)
 
-    # TODO: this is just a temporary implementation, need to check if this is indeed correct
-    def create_link(self, source, block_type='unknown', additional_info=None):
+    def create_link(self, source, block_type='unknown', additional_info=None, public_key=None):
         """
+        Create a Link Block to a source block
 
         :param source: The source block which had no initial counterpary to sign
         :param block_type: The type of the block to be constructed, as a string
         :param additional_info: a dictionary with supplementary information concerning the transaction
+        :param public_key: The public key of the counterparty (usually of the source's owner)
         :return: None
         """
+        public_key = source.public_key if public_key is None else public_key
+
         self.sign_block(self.my_peer,
                         linked=source,
-                        public_key=source.public_key,
+                        public_key=public_key,
                         block_type=block_type,
-                        transaction=additional_info)
+                        additional_info=additional_info)
 
     def sign_block(self,
                    peer,
@@ -209,14 +212,16 @@ class TrustChainCommunity(Community):
         # this method is allowed to execute in parallel, be sure to lock from before .create up to after .add_block
 
         # In this particular case there must be an implicit transaction due to the following assert
-        assert (peer is None and linked is None and public_key == EMPTY_PK) or peer is not None, \
-            "Peer, linked block and public_key should not be provided when creating a no counterparty source block"
-        assert transaction is None and linked is not None and additional_info is None and peer is not self.my_peer or \
-               transaction is not None and linked is None and additional_info is None and peer is not self.my_peer or \
-               transaction is None and linked is not None and additional_info is not None and peer is self.my_peer, \
+        assert peer is not None or peer is None and linked is None and public_key == ANY_COUNTERPARTY_PK, \
+            "Peer, linked block should not be provided when creating a no counterparty source block. Public key " \
+            "should be that reserved for any counterpary."
+        assert transaction is None and linked is not None or transaction is not None and linked is None, \
             "Either provide a linked block or a transaction, not both %s, %s" % (peer, self.my_peer)
-        assert linked is None or linked.link_public_key == self.my_peer.public_key.key_to_bin(), \
-            "Cannot counter sign block not addressed to self"
+        assert additional_info is None or additional_info is not None and linked is not None and \
+               transaction is None and peer == self.my_peer and public_key == linked.public_key, \
+            "Either no additional info is provided or one provides it for a linked block"
+        assert linked is None or linked.link_public_key == self.my_peer.public_key.key_to_bin() or \
+               linked.link_public_key == ANY_COUNTERPARTY_PK, "Cannot counter sign block not addressed to self"
         assert linked is None or linked.link_sequence_number == UNKNOWN_SEQ, \
             "Cannot counter sign block that is not a request"
         assert transaction is None or isinstance(transaction, dict), "Transaction should be a dictionary"
@@ -229,6 +234,7 @@ class TrustChainCommunity(Community):
                                                         link=linked, additional_info=additional_info,
                                                         link_pk=public_key)
         block.sign(self.my_peer.key)
+
         validation = block.validate(self.persistence)
         self.logger.info("Signed block to %s (%s) validation result %s",
                          block.link_public_key.encode("hex")[-8:], block, validation)
@@ -241,7 +247,7 @@ class TrustChainCommunity(Community):
             self.notify_listeners(block)
 
         # This is a source block with no counterparty
-        if not peer and public_key == EMPTY_PK:
+        if not peer and public_key == ANY_COUNTERPARTY_PK:
             if self.broadcast_block:
                 self.send_block(block)
             return
@@ -254,7 +260,7 @@ class TrustChainCommunity(Community):
             if self.broadcast_block:
                 self.send_block(block)
 
-            return succeed((block, None)) if public_key == EMPTY_PK else succeed((block, linked))
+            return succeed((block, None)) if public_key == ANY_COUNTERPARTY_PK else succeed((block, linked))
         elif not linked:
             # We keep track of this outstanding sign request.
             sign_deferred = Deferred()
@@ -366,9 +372,6 @@ class TrustChainCommunity(Community):
             reactor.callFromThread(cache.sign_deferred.callback, (blk, self.persistence.get_linked(blk)))
 
         # Is this a request, addressed to us, and have we not signed it already?
-        # Explanation; the first: condition ensures that the counterpart is the one initiating, and sending their half
-        # block here; the second: ensure that this block is sent to us; the third: ensure that this transaction has not
-        # already been completed
         if blk.link_sequence_number != UNKNOWN_SEQ or \
                 blk.link_public_key != self.my_peer.public_key.key_to_bin() or \
                 self.persistence.get_linked(blk) is not None:

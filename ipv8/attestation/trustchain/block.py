@@ -8,11 +8,12 @@ from ...messaging.serialization import Serializer
 from .payload import HalfBlockPayload
 
 
-GENESIS_HASH = '0'*32    # ID of the first block of the chain.
+GENESIS_HASH = '0' * 32  # ID of the first block of the chain.
 GENESIS_SEQ = 1
 UNKNOWN_SEQ = 0
-EMPTY_SIG = '0'*64
-EMPTY_PK = '0'*74
+EMPTY_SIG = '0' * 64
+EMPTY_PK = '0' * 74
+ANY_COUNTERPARTY_PK = EMPTY_PK
 
 
 class TrustChainBlock(object):
@@ -265,7 +266,9 @@ class TrustChainBlock(object):
             if pck is None or not self.crypto.is_valid_signature(
                     self.crypto.key_from_public_bin(self.public_key), pck, self.signature):
                 result.err("Invalid signature")
-        if not self.crypto.is_valid_public_bin(self.link_public_key) and self.link_public_key != EMPTY_PK:
+        if not self.crypto.is_valid_public_bin(self.link_public_key) and \
+                self.link_public_key != ANY_COUNTERPARTY_PK and \
+                self.link_public_key != EMPTY_PK:
             result.err("Linked public key is not valid")
         if self.public_key == self.link_public_key:
             # Blocks to self serve no purpose and are thus invalid.
@@ -298,8 +301,8 @@ class TrustChainBlock(object):
             if blk.signature != self.signature:
                 result.err("Signature does not match known block")
             # if the known block is not equal, and the signatures are valid, we have a double signed PK/seq. Fraud!
-            if self.hash != blk.hash and "Invalid signature" not in result.errors and\
-               "Public key is not valid" not in result.errors:
+            if self.hash != blk.hash and "Invalid signature" not in result.errors and \
+                    "Public key is not valid" not in result.errors:
                 result.err("Double sign fraud")
 
     def update_linked_consistency(self, database, link, result):
@@ -323,7 +326,7 @@ class TrustChainBlock(object):
             elif (link.link_sequence_number != self.sequence_number and
                   link.sequence_number != self.link_sequence_number):
                 result.err("No link to linked block")
-            elif self.public_key != link.link_public_key:
+            elif self.public_key != link.link_public_key and link.link_public_key != ANY_COUNTERPARTY_PK:
                 result.err("Public key mismatch on linked block")
             elif self.link_sequence_number != UNKNOWN_SEQ:
                 # self counter signs another block (link). If link has a linked block that is not equal to self,
