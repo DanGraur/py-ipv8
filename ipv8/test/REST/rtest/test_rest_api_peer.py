@@ -1,22 +1,24 @@
-import json
 import logging
 import os
 import threading
 from base64 import b64encode
+from random import choice
 from shutil import rmtree
+from string import ascii_letters
+from time import time
 
 from twisted.internet import reactor
-from twisted.internet.defer import maybeDeferred, inlineCallbacks, returnValue
+from twisted.internet.defer import inlineCallbacks, returnValue
 from twisted.internet.task import deferLater
 from twisted.web import server
 
+from ipv8.attestation.identity.community import IdentityCommunity
+from ipv8.attestation.wallet.community import AttestationCommunity
 from ipv8_service import IPv8
 from .peer_communication import GetStyleRequests, PostStyleRequests
 from .rest_peer_communication import HTTPGetRequester, HTTPPostRequester, string_to_url
 from ....REST.rest_manager import RESTRequest
 from ....REST.root_endpoint import RootEndpoint
-from ....attestation.identity.community import IdentityCommunity
-from ....attestation.wallet.community import AttestationCommunity
 from ....configuration import get_default_configuration
 from ....keyvault.crypto import ECCrypto
 from ....peer import Peer
@@ -39,7 +41,8 @@ class TestPeer(object):
 
     def __init__(self, path, port, interface='127.0.0.1', configuration=None, other_verified_peers=None):
         """
-        Create a test peer with a REST API interface.
+        Create a test peer with a REST API interface. All subclasses of this class should maintain path and port as
+        the first and second argument in the initializer method.
 
         :param path: the for the working directory of this peer
         :param port: this peer's port
@@ -55,7 +58,6 @@ class TestPeer(object):
         self._port = port
         self._interface = interface
 
-        self._path = path
         self._configuration = configuration
 
         # Check to see if we've received a custom configuration
@@ -76,7 +78,8 @@ class TestPeer(object):
                     }
                 }]
 
-        self._create_working_directory(self._path)
+        os.chdir(os.path.dirname(__file__))
+        self._path = self._create_working_directory(path)
         self._logger.info("Created working directory.")
         os.chdir(self._path)
 
@@ -94,16 +97,6 @@ class TestPeer(object):
         # If available, add the verified peers
         if other_verified_peers is not None:
             self.add_and_verify_peers(other_verified_peers)
-
-    def print_master_peers(self):
-        """
-        Print details on the master peers of each of this peer's overlays
-
-        :return: None
-        """
-        for overlay in self._ipv8.overlays:
-            print b64encode(overlay.master_peer.mid), overlay.master_peer.public_key, overlay.master_peer.address, \
-                overlay.master_peer.key.pub().key_to_bin().encode("HEX")
 
     def get_address(self):
         """
@@ -176,38 +169,47 @@ class TestPeer(object):
         """
         self._ipv8.network.discover_address(peer, (interface, port))
 
-    def stop(self):
+    def close(self):
         """
         Stop the peer
 
         :return: None
         """
         self._logger.info("Shutting down the peer")
-        self._ipv8.endpoint.close()
-        self._rest_manager.shutdown_task_manager()
-        self._rest_manager.stop()
 
-        # Close the DBs of some of the communities
+        # If the looping call is running, then stop it
+        if self._ipv8.state_machine_lc.running:
+            self._ipv8.state_machine_lc.stop()
+
+        self._ipv8.endpoint.close()
         for overlay in self._ipv8.overlays:
+            # Close the DBs since simply unloading will usually not do
             if isinstance(overlay, AttestationCommunity):
                 overlay.database.close()
             elif isinstance(overlay, IdentityCommunity):
                 overlay.persistence.close()
+            overlay.unload()
 
-        if os.path.isdir(self._path):
-            rmtree(self._path, ignore_errors=True)
+        self._rest_manager.stop()
+        self._rest_manager.shutdown_task_manager()
 
     @staticmethod
-    def _create_working_directory(path):
+    def _create_working_directory(path, append_time=True):
         """
         Creates a dir at the specified path, if not previously there; otherwise deletes the dir, and makes a new one.
 
         :param path: the location at which the dir is created
         :return: None
         """
+        if append_time:
+            # For exatra safety, we'll also append some random charaters to the end of the file
+            path += str(int(time())) + ''.join(choice(ascii_letters) for _ in range(10))
+
         if os.path.isdir(path):
             rmtree(path)
-        os.mkdir(path)
+
+        os.makedirs(path)
+        return path
 
     def get_keys(self):
         """
@@ -296,7 +298,7 @@ class TestPeer(object):
             """
             Stop the HTTP API and return a deferred that fires when the server has shut down.
             """
-            return maybeDeferred(self._site.stopListening)
+            self._site.stopListening()
 
         def get_access_parameters(self):
             """
@@ -363,7 +365,7 @@ class InteractiveTestPeer(TestPeer, threading.Thread):
             excluded_peer_mids = set(excluded_peer_mids)
 
         peer_list = yield self._get_style_requests.make_peers(dict_param)
-        peer_list = set(json.loads(peer_list))
+        peer_list = set(peer_list)
 
         # Keep iterating until peer_list is non-empty
         while not peer_list - excluded_peer_mids:
@@ -371,7 +373,7 @@ class InteractiveTestPeer(TestPeer, threading.Thread):
 
             # Forward and wait for the response
             peer_list = yield self._get_style_requests.make_peers(dict_param)
-            peer_list = set(json.loads(peer_list))
+            peer_list = set(peer_list)
 
         # Return the peer list
         returnValue(list(peer_list - excluded_peer_mids))
@@ -388,7 +390,7 @@ class InteractiveTestPeer(TestPeer, threading.Thread):
         outstanding_requests = yield self._get_style_requests.make_outstanding(dict_param)
 
         # Keep iterating until peer_list is non-empty
-        while outstanding_requests == "[]":
+        while not outstanding_requests:
             self._logger.info("Could not acquire a list of outstanding requests. Will wait 0.1 seconds and retry.")
             yield deferLater(reactor, 0.1, lambda: None)
 

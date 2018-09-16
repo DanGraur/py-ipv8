@@ -7,8 +7,8 @@ import json
 from twisted.internet.defer import Deferred, inlineCallbacks, returnValue
 from twisted.web import resource
 
-from ipv8.attestation.identity.community import IdentityCommunity
-from ipv8.attestation.wallet.community import AttestationCommunity
+from ..attestation.identity.community import IdentityCommunity
+from ..attestation.wallet.community import AttestationCommunity
 from ..attestation.wallet.primitives.attestation import binary_relativity_sha256_4
 from ..attestation.wallet.primitives.cryptosystem.boneh import generate_keypair
 from ..keyvault.crypto import ECCrypto
@@ -23,8 +23,12 @@ class AttestationEndpoint(resource.Resource):
     def __init__(self, session):
         resource.Resource.__init__(self)
         self.session = session
-        attestation_overlays = [overlay for overlay in session.overlays if isinstance(overlay, AttestationCommunity)]
-        identity_overlays = [overlay for overlay in session.overlays if isinstance(overlay, IdentityCommunity)]
+
+        attestation_overlays = [overlay for overlay in session.overlays if overlay.__class__.__name__ ==
+                                AttestationCommunity.__name__]
+        identity_overlays = [overlay for overlay in session.overlays if overlay.__class__.__name__ ==
+                             IdentityCommunity.__name__]
+
         if attestation_overlays and identity_overlays:
             self.attestation_overlay = attestation_overlays[0]
             self.attestation_overlay.set_attestation_request_callback(self.on_request_attestation)

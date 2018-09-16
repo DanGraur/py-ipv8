@@ -1,4 +1,5 @@
 import logging
+from json import loads
 from urllib import quote
 
 from twisted.internet import reactor
@@ -7,6 +8,14 @@ from twisted.web.client import Agent, readBody
 from twisted.web.http_headers import Headers
 
 from .peer_communication import GetStyleRequests, RequestException, PostStyleRequests
+
+
+def process_json_response(func):
+    @inlineCallbacks
+    def wrapper(self, param_dict):
+        res = yield func(self, param_dict)
+        returnValue(loads(res))
+    return wrapper
 
 
 class HTTPRequester(object):
@@ -87,6 +96,7 @@ class HTTPGetRequester(GetStyleRequests, HTTPRequester):
         GetStyleRequests.__init__(self)
         HTTPRequester.__init__(self)
 
+    @process_json_response
     @inlineCallbacks
     def make_outstanding(self, param_dict):
         """
@@ -110,6 +120,7 @@ class HTTPGetRequester(GetStyleRequests, HTTPRequester):
                                            param_dict.get('callback', None))
         returnValue(response)
 
+    @process_json_response
     @inlineCallbacks
     def make_verification_output(self, param_dict):
         """
@@ -133,6 +144,7 @@ class HTTPGetRequester(GetStyleRequests, HTTPRequester):
                                            param_dict.get('callback', None))
         returnValue(response)
 
+    @process_json_response
     @inlineCallbacks
     def make_peers(self, param_dict):
         """
@@ -156,6 +168,7 @@ class HTTPGetRequester(GetStyleRequests, HTTPRequester):
                                            param_dict.get('callback', None))
         returnValue(response)
 
+    @process_json_response
     @inlineCallbacks
     def make_attributes(self, param_dict):
         """
@@ -193,6 +206,7 @@ class HTTPGetRequester(GetStyleRequests, HTTPRequester):
                                            param_dict.get('callback', None))
         returnValue(response)
 
+    @process_json_response
     @inlineCallbacks
     def make_outstanding_verify(self, param_dict):
         """

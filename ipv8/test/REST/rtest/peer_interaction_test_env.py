@@ -1,7 +1,9 @@
-import json
 import os
 import unittest
 from base64 import b64encode
+from json import dumps
+from random import choice
+from string import ascii_letters
 from shutil import rmtree
 from threading import Thread
 
@@ -16,29 +18,27 @@ from .test_rest_api_peer import TestPeer
 from ...util import twisted_wrapper
 from ....attestation.trustchain.block import TrustChainBlock
 
+TEST_FOLDER_PREFIX = "test_temp"
 
-class SingleServerSetup(unittest.TestCase):
-    """AndroidTestPeer
-    Test class which defines an environment with one well-known peer. This should be extended by other subclasses,
-    which implement specific test cases.
+
+class TestRESTAPI(unittest.TestCase):
     """
-    master_peer_port = 58085
+    Class for testing the REST API of the IPv8 object
+    """
+
+    other_peer_port = 7868
 
     def __init__(self, method_name='runTest'):
-        super(SingleServerSetup, self).__init__(method_name)
-        self._master_peer = None
+        super(TestRESTAPI, self).__init__(method_name)
+        self.peer_list = []
+        self.default_test_folder = '_trial_temp'
         self._get_style_requests = None
         self._post_style_requests = None
 
-    def initialize(self, path='test_env', port=58086, interface='127.0.0.1', configuration=None,
-                   get_style_requests=None, post_style_requests=None):
+    def initialize(self, get_style_requests=None, post_style_requests=None):
         """
         An initializer method for the Single Server test environment
 
-        :param path: the master peer's path to the working directory. Defaults to 'test_env'.
-        :param port: the master peer's port. Defaults to 58086.
-        :param interface: IP or alias of the peer. Defaults to '127.0.0.1'.
-        :param configuration: IPv8 configuration object. Defaults to None.
         :param get_style_requests: GET style request generator. Defaults to None.
         :param post_style_requests: POST style request generator. Defaults to None.
         :return:
@@ -47,48 +47,61 @@ class SingleServerSetup(unittest.TestCase):
             "The get_style_requests parameter must be a subclass of GetStyleRequests"
         assert post_style_requests is None or isinstance(post_style_requests, PostStyleRequests), \
             "The post_style_requests parameter must be a subclass of PostStyleRequests"
-        # Create a so called master (well-known) peer, which should be the peer to which the requests are directed
-        self._master_peer = TestPeer(path, port, interface, configuration)
 
         # Check to see if the user has provided request generators
         self._get_style_requests = get_style_requests if get_style_requests is not None else HTTPGetRequester()
         self._post_style_requests = post_style_requests if post_style_requests is not None else HTTPPostRequester()
 
     def setUp(self):
-        super(SingleServerSetup, self).setUp()
-        SingleServerSetup.master_peer_port += 1
+        super(TestRESTAPI, self).setUp()
+        self.initialize()
 
-        self.initialize('temp_master_peer', SingleServerSetup.master_peer_port)
-
-    def tearDown(self):
-        # Call super method
-        super(SingleServerSetup, self).tearDown()
-
-        # Stop the master peer
-        self._master_peer.stop()
-
-
-class RequestTest(SingleServerSetup):
-    """
-    The starting port of the 'other_peer' peers in the test suite
-    """
-    other_peer_port = 7868
-
-    def __init__(self, method_name='runTest'):
-        super(RequestTest, self).__init__(method_name)
-        self.other_peer = None
-        self.default_test_folder = '_trial_temp'
-
-    def setUp(self):
-        super(RequestTest, self).setUp()
-        RequestTest.other_peer_port += 1
+        self.peer_list = []
+        self.create_new_peer(TestPeer, 'temp_initial_peer', None)
 
     def tearDown(self):
-        super(RequestTest, self).tearDown()
-        RequestTest.gracefully_terminate_peers(self.other_peer)
+        super(TestRESTAPI, self).tearDown()
 
-        if os.path.isdir(self.default_test_folder):
-            rmtree(self.default_test_folder, ignore_errors=True)
+        self.gracefully_terminate_peers()
+
+        # We ignore errors so there's no need to check if these dirs are there before removing the subtree
+        rmtree(self.default_test_folder, ignore_errors=True)
+        rmtree(TEST_FOLDER_PREFIX)
+
+    def create_new_peer(self, peer_cls, path, port, *args, **kwargs):
+        """
+        Create and return a new peer for testing.
+
+        :param peer_cls: specifies the test class of the new peer
+        :param path: the path / working directory of the peer
+        :param port: the port of the peer mai be optionally provided, however, this is not advised as it might overlap
+                     with an existing peer. Thus, it should be set to None. In this case, the port will be chosen by
+                     this method.
+        :param args: peer arguments (not considering the path and port)
+        :param kwargs: keyworded peer arguments
+        :return: the newly created peer and its index in the peer list
+        """
+        assert issubclass(peer_cls, TestPeer), "The provided class type is not for testing (i.e. a subclass of " \
+                                               "TestPeer"
+        assert port is None or isinstance(port, int), "The port must be an int or None"
+        # Add a prefix to the path of the peer
+
+        path = os.path.join(TEST_FOLDER_PREFIX, path)
+        path += ''.join(choice(ascii_letters) for _ in range(10))
+
+        # Check to see if a peer was provided; if not, generate it
+        if port is None:
+            port = self.other_peer_port
+            TestRESTAPI.other_peer_port += 1
+
+        # Create the new peer arguments
+        temp_args = [path, port] + list(args)
+
+        # Create the new peer, and add it to the list of peers for this test
+        new_peer = peer_cls(*temp_args, **kwargs)
+        self.peer_list.append(new_peer)
+
+        return new_peer, len(self.peer_list) - 1
 
     @inlineCallbacks
     def wait_for_peers(self, dict_param, excluded_peer_mids=None):
@@ -109,7 +122,7 @@ class RequestTest(SingleServerSetup):
             excluded_peer_mids = set(excluded_peer_mids)
 
         peer_list = yield self._get_style_requests.make_peers(dict_param)
-        peer_list = set(json.loads(peer_list))
+        peer_list = set(peer_list)
 
         # Keep iterating until peer_list is non-empty
         while not peer_list - excluded_peer_mids:
@@ -117,7 +130,7 @@ class RequestTest(SingleServerSetup):
 
             # Forward and wait for the response
             peer_list = yield self._get_style_requests.make_peers(dict_param)
-            peer_list = set(json.loads(peer_list))
+            peer_list = set(peer_list)
 
         # Return the peer list
         returnValue(list(peer_list - excluded_peer_mids))
@@ -133,14 +146,14 @@ class RequestTest(SingleServerSetup):
         outstanding_requests = yield self._get_style_requests.make_outstanding(dict_param)
 
         # Keep iterating until peer_list is non-empty
-        while outstanding_requests == "[]":
+        while not outstanding_requests:
             yield deferLater(reactor, 0.1, lambda: None)
 
             # Forward and wait for the response
             outstanding_requests = yield self._get_style_requests.make_outstanding(dict_param)
 
         # Return the peer list
-        returnValue(json.loads(outstanding_requests))
+        returnValue(outstanding_requests)
 
     @inlineCallbacks
     def attest_all_outstanding_requests(self, param_dict):
@@ -189,47 +202,35 @@ class RequestTest(SingleServerSetup):
 
         returnValue(verification_responses)
 
-    @staticmethod
-    def gracefully_terminate_peers(peers):
+    def gracefully_terminate_peers(self):
         """
         Gracefully terminate the peers passed as parameter
 
-        :param peers: Either a single peer or a list of peers which should be gracefully terminated
         :return: None
         """
-        assert peers is None or isinstance(peers, TestPeer) or (
-            isinstance(peers, list) and all(isinstance(x, TestPeer) for x in peers)), \
-            "The passed parameter must be either None, a list of TestPeer instances or a singular TestPeer instance"
-
-        if peers is None:
-            return
-
-        if not isinstance(peers, list):
-            peers = [peers]
-
-        for peer in peers:
+        for peer in self.peer_list:
             if isinstance(peer, Thread):
                 peer.join()
-            peer.stop()
+            peer.close()
 
     @twisted_wrapper(30)
     def test_get_peers_request(self):
         """
-        Test the GET: peers request type
+        Test the (GET: peers request) type
         :return: None
         """
         param_dict = {
-            'port': self._master_peer.port,
-            'interface': self._master_peer.interface,
+            'port': self.peer_list[0].port,
+            'interface': self.peer_list[0].interface,
             'endpoint': 'attestation'
         }
 
         # Create a dummy peer which will be used towards peer discovery; there is no need to start() it
-        self.other_peer = TestPeer('temp_local_peer', RequestTest.other_peer_port)
-        other_peer_mids = [b64encode(x.mid) for x in self.other_peer.get_keys().values()]
+        self.create_new_peer(TestPeer, 'temp_local_peer', None)
+        other_peer_mids = [b64encode(x.mid) for x in self.peer_list[1].get_keys().values()]
 
         # Add the peers
-        self._master_peer.add_and_verify_peers([self.other_peer])
+        self.peer_list[0].add_and_verify_peers([self.peer_list[1]])
 
         result = yield self.wait_for_peers(param_dict)
 
@@ -238,64 +239,62 @@ class RequestTest(SingleServerSetup):
     @twisted_wrapper(30)
     def test_get_outstanding_requests(self):
         """
-        Test the GET: outstanding request type
+        Test the (GET: outstanding) request type
         :return: None
         """
         param_dict = {
-            'port': self._master_peer.port,
-            'interface': self._master_peer.interface,
+            'port': self.peer_list[0].port,
+            'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR'
         }
 
-        self.other_peer = AndroidTestPeer(param_dict.copy(), 'temp_local_peer', RequestTest.other_peer_port,
-                                          other_verified_peers=[self._master_peer])
-        self.other_peer.start()
+        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
+                             other_verified_peers=[self.peer_list[0]])
+        self.peer_list[1].start()
 
         result = yield self.wait_for_outstanding_requests(param_dict)
 
         self.assertTrue(any((x[0] == y and x[1] == param_dict['attribute_name'] for x in result)
-                            for y in self.other_peer.get_mids()),
+                            for y in self.peer_list[1].get_mids()),
                         "Could not find the outstanding request forwarded by the second peer")
 
     @twisted_wrapper(30)
     def test_get_verification_output(self):
         """
-        Test the GET: verification output request type
+        Test the (GET: verification output) request type
         :return: None
         """
         param_dict = {
-            'port': self._master_peer.port,
-            'interface': self._master_peer.interface,
+            'port': self.peer_list[0].port,
+            'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
             'attribute_value': string_to_url(b64encode('binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(json.dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}))
         }
 
         # Forward the attestations to the well-known peer
-        self.other_peer = AndroidTestPeer(param_dict.copy(), 'temp_local_peer', RequestTest.other_peer_port,
-                                          other_verified_peers=[self._master_peer])
-        self.other_peer.start()
+        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
+                             other_verified_peers=[self.peer_list[0]])
+        self.peer_list[1].start()
 
         yield self.attest_all_outstanding_requests(param_dict.copy())
 
         # Get the hash of the attestation to be validated (the one which was just attested)
         attributes = yield self._get_style_requests.make_attributes(param_dict)
-        attributes = json.loads(attributes)
         param_dict['attribute_hash'] = string_to_url(attributes[0][1])
 
         # Forward the actual verification
-        verification_responses = yield self.verify_all_attestations(self.other_peer.get_mids(), param_dict.copy())
+        verification_responses = yield self.verify_all_attestations(self.peer_list[1].get_mids(), param_dict.copy())
         self.assertTrue(all(x == "" for x in verification_responses), "At least one of the verification "
                                                                       "responses was non-empty.")
 
         # Unlock the verification
-        param_dict['port'] = self.other_peer.port
+        param_dict['port'] = self.peer_list[1].port
 
         outstanding_verifications = yield self._get_style_requests.make_outstanding_verify(param_dict)
-        outstanding_verifications = json.loads(outstanding_verifications)
         self.assertIsNotNone(outstanding_verifications, "Could not retrieve any outstanding verifications")
 
         param_dict['mid'] = string_to_url(outstanding_verifications[0][0])
@@ -303,11 +302,10 @@ class RequestTest(SingleServerSetup):
         yield self._post_style_requests.make_allow_verify(param_dict)
         yield deferLater(reactor, 1, lambda: None)
 
-        param_dict['port'] = self.master_peer_port
+        param_dict['port'] = self.peer_list[0].port
 
         # Get the output
         verification_output = yield self._get_style_requests.make_verification_output(param_dict)
-        verification_output = json.loads(verification_output)
 
         self.assertTrue([["YXNk", 0.0], ["YXNkMg==", 0.0]] in verification_output.values(),
                         "Something went wrong with the verification. Unexpected output values.")
@@ -315,44 +313,43 @@ class RequestTest(SingleServerSetup):
     @twisted_wrapper(30)
     def test_get_outstanding_verify(self):
         """
-        Test the GET: outstanding verify request type
+        Test the (GET: outstanding verify) request type
         :return: None
         """
         param_dict = {
-            'port': self._master_peer.port,
-            'interface': self._master_peer.interface,
+            'port': self.peer_list[0].port,
+            'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
             'attribute_value': string_to_url(b64encode('binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(json.dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}))
         }
 
         # Forward the attestations to the well-known peer
-        self.other_peer = AndroidTestPeer(param_dict.copy(), 'temp_local_peer', RequestTest.other_peer_port,
-                                          other_verified_peers=[self._master_peer])
+        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
+                             other_verified_peers=[self.peer_list[0]])
 
-        self.other_peer.start()
+        self.peer_list[1].start()
 
         yield self.attest_all_outstanding_requests(param_dict.copy())
 
         # Get the hash of the attestation to be validated (the one which was just attested)
         attributes = yield self._get_style_requests.make_attributes(param_dict)
-        attributes = json.loads(attributes)
         param_dict['attribute_hash'] = string_to_url(attributes[0][1])
 
         # Forward the actual verification
-        verification_responses = yield self.verify_all_attestations(self.other_peer.get_mids(), param_dict.copy())
+        verification_responses = yield self.verify_all_attestations(self.peer_list[1].get_mids(), param_dict.copy())
         self.assertTrue(all(x == "" for x in verification_responses), "At least one of the verification "
                                                                       "responses was non-empty.")
 
-        param_dict['port'] = self.other_peer.port
+        param_dict['port'] = self.peer_list[1].port
         result = yield self._get_style_requests.make_outstanding_verify(param_dict)
 
         # Retrieve only the mids
-        result = [x[0] for x in json.loads(result)]
+        result = [x[0] for x in result]
 
-        self.assertTrue(any(x in result for x in self._master_peer.get_mids(False)), "Something went wrong. Could not "
+        self.assertTrue(any(x in result for x in self.peer_list[0].get_mids(False)), "Something went wrong. Could not "
                                                                                      "find a master peer mid in the "
                                                                                      "outstanding verification "
                                                                                      "requests.")
@@ -360,53 +357,52 @@ class RequestTest(SingleServerSetup):
     @twisted_wrapper(30)
     def test_get_attributes(self):
         """
-        Test the GET: attributes request type
+        Test the (GET: attributes) request type
         :return: None
         """
         param_dict = {
-            'port': self._master_peer.port,
-            'interface': self._master_peer.interface,
+            'port': self.peer_list[0].port,
+            'interface': self.peer_list[0].interface,
             'endpoint': 'attestation'
         }
 
         block = TrustChainBlock()
-        block.public_key = self._master_peer.get_overlay_by_name('IdentityCommunity').my_peer.public_key.key_to_bin()
-        block.transaction = {'name': 123, 'hash': '123', 'metadata': b64encode(json.dumps({'psn': '1234567890'}))}
+        block.public_key = self.peer_list[0].get_overlay_by_name('IdentityCommunity').my_peer.public_key.key_to_bin()
+        block.transaction = {'name': 123, 'hash': '123', 'metadata': b64encode(dumps({'psn': '1234567890'}))}
 
-        self._master_peer.get_overlay_by_name('IdentityCommunity').persistence.add_block(block)
+        self.peer_list[0].get_overlay_by_name('IdentityCommunity').persistence.add_block(block)
 
         result = yield self._get_style_requests.make_attributes(param_dict)
 
-        self.assertEqual(result, '[[123, "MTIz", "eyJwc24iOiAiMTIzNDU2Nzg5MCJ9", "awzBTMhmU9B4lQuMxT1DS03TPfU="]]',
+        self.assertEqual(result, [[123, "MTIz", "eyJwc24iOiAiMTIzNDU2Nzg5MCJ9", "awzBTMhmU9B4lQuMxT1DS03TPfU="]],
                          "The response was not as expected. This would suggest that something went wrong "
                          "with the attributes request. The error: '%s'" % result)
 
     @twisted_wrapper(30)
     def test_get_attributes_alternative(self):
         """
-        Test the GET: attributes request type
+        Test the (GET: attributes) request type
         :return: None
         """
         param_dict = {
-            'port': self._master_peer.port,
-            'interface': self._master_peer.interface,
+            'port': self.peer_list[0].port,
+            'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
             'attribute_value': string_to_url(b64encode('binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(json.dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}))
         }
 
         # Forward the attestations to the well-known peer
-        self.other_peer = AndroidTestPeer(param_dict.copy(), 'temp_local_peer', RequestTest.other_peer_port,
-                                          other_verified_peers=[self._master_peer])
-        self.other_peer.start()
+        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
+                             other_verified_peers=[self.peer_list[0]])
+        self.peer_list[1].start()
 
         yield self.attest_all_outstanding_requests(param_dict.copy())
 
         # Get the hash of the attestation to be validated (the one which was just attested)
         attributes = yield self._get_style_requests.make_attributes(param_dict)
-        attributes = json.loads(attributes)
 
         self.assertTrue(attributes[0][0] == param_dict['attribute_name'] and attributes[0][1] != "",
                         "The response was not as expected. This would suggest that something went wrong with "
@@ -415,23 +411,23 @@ class RequestTest(SingleServerSetup):
     @twisted_wrapper(30)
     def test_get_drop_identity(self):
         """
-        Test the GET: drop identity request type
+        Test the (GET: drop identity) request type
         :return: None
         """
         param_dict = {
-            'port': self._master_peer.port,
-            'interface': self._master_peer.interface,
+            'port': self.peer_list[0].port,
+            'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
             'attribute_value': string_to_url(b64encode('binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(json.dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}))
         }
 
         # Send a random attestation request to the well-known peer
-        self.other_peer = AndroidTestPeer(param_dict.copy(), 'temp_local_peer', RequestTest.other_peer_port,
-                                          other_verified_peers=[self._master_peer])
-        self.other_peer.start()
+        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
+                             other_verified_peers=[self.peer_list[0]])
+        self.peer_list[1].start()
 
         outstanding_requests = yield self.wait_for_outstanding_requests(param_dict)
 
@@ -439,14 +435,14 @@ class RequestTest(SingleServerSetup):
 
         # Ensure that no block/attestation exists
         attributes = yield self._get_style_requests.make_attributes(param_dict)
-        self.assertEqual(attributes, '[]', "Something's wrong, there shouldn't be any blocks.")
+        self.assertEqual(attributes, [], "Something's wrong, there shouldn't be any blocks.")
 
         # Attest the outstanding request. This should mean that the attribute DB is non-empty in the well-known peer
         yield self.attest_all_outstanding_requests(param_dict)
 
         # Ensure that the attestation has been completed
         attributes = yield self._get_style_requests.make_attributes(param_dict)
-        self.assertNotEqual(attributes, '[]', "Something's wrong, the attribute list should be non-empty.")
+        self.assertNotEqual(attributes, [], "Something's wrong, the attribute list should be non-empty.")
 
         # Drop the identity
         result = yield self._get_style_requests.make_drop_identity(param_dict)
@@ -454,33 +450,33 @@ class RequestTest(SingleServerSetup):
 
         # Make sure the identity was successfully dropped
         result = yield self._get_style_requests.make_attributes(param_dict)
-        self.assertEqual(result, '[]', 'The identity could not be dropped. Block DB still populated.')
+        self.assertEqual(result, [], 'The identity could not be dropped. Block DB still populated.')
 
         result = yield self._get_style_requests.make_outstanding(param_dict)
-        self.assertEqual(result, '[]', 'The identity could not be dropped. Outstanding requests still remaining.')
+        self.assertEqual(result, [], 'The identity could not be dropped. Outstanding requests still remaining.')
 
     @twisted_wrapper(30)
     def test_post_attestation_request(self):
         """
-        Test the POST: request request type
+        Test the (POST: request) request type
         :return: None
         """
         param_dict = {
-            'port': self._master_peer.port,
-            'interface': self._master_peer.interface,
+            'port': self.peer_list[0].port,
+            'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
-            'metadata': b64encode(json.dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}))
         }
 
         # This should return an empty response
         outstanding_requests = yield self._get_style_requests.make_outstanding(param_dict)
 
-        self.assertEqual(outstanding_requests, '[]', "Something went wrong, there should be no outstanding requests.")
+        self.assertEqual(outstanding_requests, [], "Something went wrong, there should be no outstanding requests.")
 
-        self.other_peer = AndroidTestPeer(param_dict.copy(), 'temp_local_peer', RequestTest.other_peer_port,
-                                          other_verified_peers=[self._master_peer])
-        self.other_peer.start()
+        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
+                             other_verified_peers=[self.peer_list[0]])
+        self.peer_list[1].start()
 
         # This should return a non-empty response
         outstanding_requests = yield self.wait_for_outstanding_requests(param_dict)
@@ -489,66 +485,65 @@ class RequestTest(SingleServerSetup):
     @twisted_wrapper(30)
     def test_post_attest(self):
         """
-        Test the POST: attest request type
+        Test the (POST: attest) request type
         :return: None
         """
         param_dict = {
-            'port': self._master_peer.port,
-            'interface': self._master_peer.interface,
+            'port': self.peer_list[0].port,
+            'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
             'attribute_value': string_to_url(b64encode('binarydata'), True),
-            'metadata': b64encode(json.dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}))
         }
 
-        self.other_peer = AndroidTestPeer(param_dict.copy(), 'temp_local_peer', RequestTest.other_peer_port,
-                                          other_verified_peers=[self._master_peer])
-        self.other_peer.start()
+        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
+                             other_verified_peers=[self.peer_list[0]])
+        self.peer_list[1].start()
 
-        param_dict['port'] = self.other_peer.port
+        param_dict['port'] = self.peer_list[1].port
         attributes = yield self._get_style_requests.make_attributes(param_dict)
-        attributes = json.loads(attributes)
         self.assertTrue(len(attributes) == 0, "There mustn't already be any attestations in the other peer.")
 
-        param_dict['port'] = self._master_peer.port
+        param_dict['port'] = self.peer_list[0].port
         responses = yield self.attest_all_outstanding_requests(param_dict.copy())
         self.assertTrue(all(x == "" for x in responses[1]), "Something went wrong, not all responses were empty.")
 
-        param_dict['port'] = self.other_peer.port
+        param_dict['port'] = self.peer_list[1].port
         attributes = yield self._get_style_requests.make_attributes(param_dict)
-        attributes = json.loads(attributes)
-        self.assertTrue(len(attributes) == 1 and attributes[0][0] == param_dict['attribute_name'],
-                        "There should be only one attestation in the other peer's DB.")
+        self.assertTrue(len(attributes) == 1, "There should only be one attestation in the DB.")
+        self.assertTrue(attributes[0][0] == param_dict['attribute_name'], "Expected attestation for %s, got it for "
+                                                                          "%s" % (param_dict['attribute_name'],
+                                                                                  attributes[0][0]))
 
     @twisted_wrapper(30)
     def test_post_verify(self):
         """
-        Test the POST: verify request type
+        Test the (POST: verify) request type
         :return: None
         """
         param_dict = {
-            'port': self._master_peer.port,
-            'interface': self._master_peer.interface,
+            'port': self.peer_list[0].port,
+            'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
             'attribute_value': string_to_url(b64encode('binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(json.dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}))
         }
 
         # Forward the attestations to the well-known peer
-        self.other_peer = AndroidTestPeer(param_dict.copy(), 'temp_local_peer', RequestTest.other_peer_port,
-                                          other_verified_peers=[self._master_peer])
-        self.other_peer.start()
+        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
+                             other_verified_peers=[self.peer_list[0]])
+        self.peer_list[1].start()
 
         yield self.attest_all_outstanding_requests(param_dict.copy())
 
         # Get the mids of the other peer
-        other_peer_mids = [string_to_url(b64encode(x.mid)) for x in self.other_peer.get_keys().values()]
+        other_peer_mids = [string_to_url(b64encode(x.mid)) for x in self.peer_list[1].get_keys().values()]
 
         # Get the hash of the attestation to be validated (the one which was just attested)
         attributes = yield self._get_style_requests.make_attributes(param_dict)
-        attributes = json.loads(attributes)
         param_dict['attribute_hash'] = string_to_url(attributes[0][1])
 
         # Forward the actual verification
@@ -560,41 +555,39 @@ class RequestTest(SingleServerSetup):
     @twisted_wrapper(30)
     def test_post_allow_verify(self):
         """
-        Test the POST: allow verify request type
+        Test the (POST: allow verify) request type
         :return: None
         """
         param_dict = {
-            'port': self._master_peer.port,
-            'interface': self._master_peer.interface,
+            'port': self.peer_list[0].port,
+            'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
             'attribute_value': string_to_url(b64encode('binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(json.dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}))
         }
 
         # Forward the attestations to the well-known peer
-        self.other_peer = AndroidTestPeer(param_dict.copy(), 'temp_local_peer', RequestTest.other_peer_port,
-                                          other_verified_peers=[self._master_peer])
-        self.other_peer.start()
+        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
+                             other_verified_peers=[self.peer_list[0]])
+        self.peer_list[1].start()
 
         yield self.attest_all_outstanding_requests(param_dict.copy())
 
         # Get the hash of the attestation to be validated (the one which was just attested)
         attributes = yield self._get_style_requests.make_attributes(param_dict)
-        attributes = json.loads(attributes)
         param_dict['attribute_hash'] = string_to_url(attributes[0][1])
 
         # Forward the actual verification
-        verification_responses = yield self.verify_all_attestations(self.other_peer.get_mids(), param_dict.copy())
+        verification_responses = yield self.verify_all_attestations(self.peer_list[1].get_mids(), param_dict.copy())
         self.assertTrue(all(x == "" for x in verification_responses), "At least one of the verification "
                                                                       "responses was non-empty.")
 
         # Unlock the verification
-        param_dict['port'] = self.other_peer.port
+        param_dict['port'] = self.peer_list[1].port
 
         outstanding_verifications = yield self._get_style_requests.make_outstanding_verify(param_dict)
-        outstanding_verifications = json.loads(outstanding_verifications)
         self.assertIsNotNone(outstanding_verifications, "Could not retrieve any outstanding verifications")
 
         param_dict['mid'] = string_to_url(outstanding_verifications[0][0])

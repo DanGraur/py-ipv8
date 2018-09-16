@@ -14,14 +14,14 @@ class AndroidTestPeer(InteractiveTestPeer):
     Simulates the android application
     """
 
-    def __init__(self, param_dict, path, port, interface='127.0.0.1', configuration=None, get_style_requests=None,
+    def __init__(self, path, port, param_dict, interface='127.0.0.1', configuration=None, get_style_requests=None,
                  post_style_requests=None, other_verified_peers=None):
         """
         AndroidTestPeer initializer
 
-        :param param_dict: a dictionary containing the required parameters to communicate with a peer
         :param path: the for the working directory of this peer
         :param port: this peer's port
+        :param param_dict: a dictionary containing the required parameters to communicate with a peer
         :param interface: IP or alias of the peer. Defaults to '127.0.0.1'
         :param configuration: IPv8 configuration object. Defaults to None
         :param get_style_requests: GET style request generator. Defaults to None
@@ -56,14 +56,14 @@ class MinimalActivityTestPeer(InteractiveTestPeer):
     Simulates a minimal activity test peer, which only attempts to discover fellow peers then goes inactive
     """
 
-    def __init__(self, param_dict, path, port, interface='127.0.0.1', configuration=None, get_style_requests=None,
+    def __init__(self, path, port, param_dict, interface='127.0.0.1', configuration=None, get_style_requests=None,
                  other_verified_peers=None):
         """
         MinimalActivityTestPeer initializer
 
-        :param param_dict: a dictionary containing the required parameters to communicate with a peer
         :param path: the for the working directory of this peer
         :param port: this peer's port
+        :param param_dict: a dictionary containing the required parameters to communicate with a peer
         :param interface: IP or alias of the peer. Defaults to '127.0.0.1'
         :param configuration: IPv8 configuration object. Defaults to None
         :param get_style_requests: GET style request generator. Defaults to None
