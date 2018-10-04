@@ -41,4 +41,4 @@ ipv8/test/dht/test_routing.py:TestBucket
 ipv8/test/dht/test_routing.py:TestRoutingTable
 ipv8/test/dht/test_storage.py:TestStorage
 
-ipv8/test/REST/rtest/peer_interaction_test_env.py:TestRESTAPI
+ipv8/test/REST/test_attestation_endpoint.py:TestAttestationEndpoint

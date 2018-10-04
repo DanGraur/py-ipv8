@@ -1,6 +1,5 @@
 import logging
 from json import loads
-from urllib import quote
 
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue
@@ -8,6 +7,7 @@ from twisted.web.client import Agent, readBody
 from twisted.web.http_headers import Headers
 
 from .peer_communication import GetStyleRequests, RequestException, PostStyleRequests
+from ....util import quote
 
 
 def process_json_response(func):
@@ -38,7 +38,8 @@ class HTTPRequester(object):
 
         :param url: the destination of the request is not declared in __all__
         :param request_type: the type of request (GET, POST, PUT, DELETE, etc.)
-        :param arguments: the arguments to be attached to the request
+        :param arguments: the arguments to be attached to the request. This should be a dictionary of unicode strings
+                          (both the keys and the values), or None
         :param on_complete_callback:
         :return: a Deferred object for the response of this request
         """
@@ -46,12 +47,13 @@ class HTTPRequester(object):
         if arguments is None:
             arguments = {}
 
-        request_url = url + '?' + '&'.join("%s=%s" % (k, v) for k, v in arguments.iteritems())
+        request_url = url + '?' + '&'.join("%s=%s" % (k, v) for k, v in arguments.items())
         self._logger.info("[HTTP-%s] %s", request_type, request_url)
+
         d = self._agent.request(
-            request_type,
-            request_url,
-            Headers({'User-Agent': ['Twisted Web Client Example'],
+            request_type.encode('utf_8'),
+            request_url.encode('utf_8'),
+            Headers({'User-Agent': ['Twisted Web Client'],
                      'Content-Type': ['text/x-greeting']}),
             None)
 
@@ -419,14 +421,17 @@ class HTTPPostRequester(PostStyleRequests, HTTPRequester):
         returnValue(response)
 
 
-def string_to_url(string, quote_string=False):
+def string_to_url(string, quote_string=False, to_utf_8=False):
     """
     Convert a string to a format which is compatible to it being passed via a url
 
     :param string: the string to be processed
     :param quote_string: True if the processed string should be quoted or not
+    :param to_utf_8: if True result is returned as utf-8 format, otherwise as unicode
     :return: a url compatible string
     """
-    string = string if isinstance(string, str) else str(string)
+    string = string if isinstance(string, str) else string.decode('utf-8')
 
-    return string.replace("+", "%2B") if not quote_string else quote(string.replace("+", "%2B"))
+    string = string.replace("+", "%2B") if not quote_string else quote(string.replace("+", "%2B"))
+
+    return string.encode('utf-8') if to_utf_8 else string

@@ -1,107 +1,23 @@
-import os
-import unittest
 from base64 import b64encode
 from json import dumps
-from random import choice
-from string import ascii_letters
-from shutil import rmtree
-from threading import Thread
-
 from twisted.internet import reactor
 from twisted.internet.defer import returnValue, inlineCallbacks
 from twisted.internet.task import deferLater
 
-from .peer_communication import GetStyleRequests, PostStyleRequests
-from .peer_interactive_behavior import AndroidTestPeer
-from .rest_peer_communication import HTTPGetRequester, HTTPPostRequester, string_to_url
-from .test_rest_api_peer import TestPeer
-from ...util import twisted_wrapper
-from ....attestation.trustchain.block import TrustChainBlock
-
-TEST_FOLDER_PREFIX = "test_temp"
+from ..mocking.rest.base import RESTTestBase
+from ..mocking.rest.peer_interactive_behavior import AndroidTestPeer
+from ..mocking.rest.rest_peer_communication import string_to_url
+from ..mocking.rest.rest_api_peer import TestPeer
 
 
-class TestRESTAPI(unittest.TestCase):
+class TestAttestationEndpoint(RESTTestBase):
     """
     Class for testing the REST API of the IPv8 object
     """
 
-    other_peer_port = 7868
-
-    def __init__(self, method_name='runTest'):
-        super(TestRESTAPI, self).__init__(method_name)
-        self.peer_list = []
-        self.default_test_folder = '_trial_temp'
-        self._get_style_requests = None
-        self._post_style_requests = None
-
-    def initialize(self, get_style_requests=None, post_style_requests=None):
-        """
-        An initializer method for the Single Server test environment
-
-        :param get_style_requests: GET style request generator. Defaults to None.
-        :param post_style_requests: POST style request generator. Defaults to None.
-        :return:
-        """
-        assert get_style_requests is None or isinstance(get_style_requests, GetStyleRequests), \
-            "The get_style_requests parameter must be a subclass of GetStyleRequests"
-        assert post_style_requests is None or isinstance(post_style_requests, PostStyleRequests), \
-            "The post_style_requests parameter must be a subclass of PostStyleRequests"
-
-        # Check to see if the user has provided request generators
-        self._get_style_requests = get_style_requests if get_style_requests is not None else HTTPGetRequester()
-        self._post_style_requests = post_style_requests if post_style_requests is not None else HTTPPostRequester()
-
     def setUp(self):
-        super(TestRESTAPI, self).setUp()
-        self.initialize()
-
-        self.peer_list = []
-        self.create_new_peer(TestPeer, 'temp_initial_peer', None)
-
-    def tearDown(self):
-        super(TestRESTAPI, self).tearDown()
-
-        self.gracefully_terminate_peers()
-
-        # We ignore errors so there's no need to check if these dirs are there before removing the subtree
-        rmtree(self.default_test_folder, ignore_errors=True)
-        rmtree(TEST_FOLDER_PREFIX)
-
-    def create_new_peer(self, peer_cls, path, port, *args, **kwargs):
-        """
-        Create and return a new peer for testing.
-
-        :param peer_cls: specifies the test class of the new peer
-        :param path: the path / working directory of the peer
-        :param port: the port of the peer mai be optionally provided, however, this is not advised as it might overlap
-                     with an existing peer. Thus, it should be set to None. In this case, the port will be chosen by
-                     this method.
-        :param args: peer arguments (not considering the path and port)
-        :param kwargs: keyworded peer arguments
-        :return: the newly created peer and its index in the peer list
-        """
-        assert issubclass(peer_cls, TestPeer), "The provided class type is not for testing (i.e. a subclass of " \
-                                               "TestPeer"
-        assert port is None or isinstance(port, int), "The port must be an int or None"
-        # Add a prefix to the path of the peer
-
-        path = os.path.join(TEST_FOLDER_PREFIX, path)
-        path += ''.join(choice(ascii_letters) for _ in range(10))
-
-        # Check to see if a peer was provided; if not, generate it
-        if port is None:
-            port = self.other_peer_port
-            TestRESTAPI.other_peer_port += 1
-
-        # Create the new peer arguments
-        temp_args = [path, port] + list(args)
-
-        # Create the new peer, and add it to the list of peers for this test
-        new_peer = peer_cls(*temp_args, **kwargs)
-        self.peer_list.append(new_peer)
-
-        return new_peer, len(self.peer_list) - 1
+        super(TestAttestationEndpoint, self).setUp()
+        self.initialize([(1, TestPeer)])
 
     @inlineCallbacks
     def wait_for_peers(self, dict_param, excluded_peer_mids=None):
@@ -132,8 +48,8 @@ class TestRESTAPI(unittest.TestCase):
             peer_list = yield self._get_style_requests.make_peers(dict_param)
             peer_list = set(peer_list)
 
-        # Return the peer list
-        returnValue(list(peer_list - excluded_peer_mids))
+        # Return the peer list, after they are encoded in utf-8 byte format
+        returnValue([x.encode('utf-8') for x in list(peer_list - excluded_peer_mids)])
 
     @inlineCallbacks
     def wait_for_outstanding_requests(self, dict_param):
@@ -153,7 +69,7 @@ class TestRESTAPI(unittest.TestCase):
             outstanding_requests = yield self._get_style_requests.make_outstanding(dict_param)
 
         # Return the peer list
-        returnValue(outstanding_requests)
+        returnValue([(x[0].encode('utf-8'), x[1], x[2]) for x in outstanding_requests])
 
     @inlineCallbacks
     def attest_all_outstanding_requests(self, param_dict):
@@ -202,18 +118,7 @@ class TestRESTAPI(unittest.TestCase):
 
         returnValue(verification_responses)
 
-    def gracefully_terminate_peers(self):
-        """
-        Gracefully terminate the peers passed as parameter
-
-        :return: None
-        """
-        for peer in self.peer_list:
-            if isinstance(peer, Thread):
-                peer.join()
-            peer.close()
-
-    @twisted_wrapper(30)
+    @inlineCallbacks
     def test_get_peers_request(self):
         """
         Test the (GET: peers request) type
@@ -226,7 +131,7 @@ class TestRESTAPI(unittest.TestCase):
         }
 
         # Create a dummy peer which will be used towards peer discovery; there is no need to start() it
-        self.create_new_peer(TestPeer, 'temp_local_peer', None)
+        self.create_new_peer(TestPeer, None, memory_dbs=True)
         other_peer_mids = [b64encode(x.mid) for x in self.peer_list[1].get_keys().values()]
 
         # Add the peers
@@ -236,7 +141,7 @@ class TestRESTAPI(unittest.TestCase):
 
         self.assertTrue(any(x in other_peer_mids for x in result), "Could not find the second peer.")
 
-    @twisted_wrapper(30)
+    @inlineCallbacks
     def test_get_outstanding_requests(self):
         """
         Test the (GET: outstanding) request type
@@ -249,8 +154,8 @@ class TestRESTAPI(unittest.TestCase):
             'attribute_name': 'QR'
         }
 
-        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
-                             other_verified_peers=[self.peer_list[0]])
+        self.create_new_peer(AndroidTestPeer, None, param_dict.copy(), other_verified_peers=[self.peer_list[0]],
+                             memory_dbs=True)
         self.peer_list[1].start()
 
         result = yield self.wait_for_outstanding_requests(param_dict)
@@ -259,7 +164,7 @@ class TestRESTAPI(unittest.TestCase):
                             for y in self.peer_list[1].get_mids()),
                         "Could not find the outstanding request forwarded by the second peer")
 
-    @twisted_wrapper(30)
+    @inlineCallbacks
     def test_get_verification_output(self):
         """
         Test the (GET: verification output) request type
@@ -270,14 +175,14 @@ class TestRESTAPI(unittest.TestCase):
             'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
-            'attribute_value': string_to_url(b64encode('binarydata'), True),
+            'attribute_value': string_to_url(b64encode(b'binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}).encode('utf-8'))
         }
 
         # Forward the attestations to the well-known peer
-        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
-                             other_verified_peers=[self.peer_list[0]])
+        self.create_new_peer(AndroidTestPeer, None, param_dict.copy(), other_verified_peers=[self.peer_list[0]],
+                             memory_dbs=True)
         self.peer_list[1].start()
 
         yield self.attest_all_outstanding_requests(param_dict.copy())
@@ -288,8 +193,8 @@ class TestRESTAPI(unittest.TestCase):
 
         # Forward the actual verification
         verification_responses = yield self.verify_all_attestations(self.peer_list[1].get_mids(), param_dict.copy())
-        self.assertTrue(all(x == "" for x in verification_responses), "At least one of the verification "
-                                                                      "responses was non-empty.")
+        self.assertTrue(all(x == b'' for x in verification_responses), "At least one of the verification "
+                                                                       "responses was non-empty.")
 
         # Unlock the verification
         param_dict['port'] = self.peer_list[1].port
@@ -310,7 +215,7 @@ class TestRESTAPI(unittest.TestCase):
         self.assertTrue([["YXNk", 0.0], ["YXNkMg==", 0.0]] in verification_output.values(),
                         "Something went wrong with the verification. Unexpected output values.")
 
-    @twisted_wrapper(30)
+    @inlineCallbacks
     def test_get_outstanding_verify(self):
         """
         Test the (GET: outstanding verify) request type
@@ -321,14 +226,14 @@ class TestRESTAPI(unittest.TestCase):
             'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
-            'attribute_value': string_to_url(b64encode('binarydata'), True),
+            'attribute_value': string_to_url(b64encode(b'binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}).encode('utf-8'))
         }
 
         # Forward the attestations to the well-known peer
-        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
-                             other_verified_peers=[self.peer_list[0]])
+        self.create_new_peer(AndroidTestPeer, None, param_dict.copy(), other_verified_peers=[self.peer_list[0]],
+                             memory_dbs=True)
 
         self.peer_list[1].start()
 
@@ -340,45 +245,21 @@ class TestRESTAPI(unittest.TestCase):
 
         # Forward the actual verification
         verification_responses = yield self.verify_all_attestations(self.peer_list[1].get_mids(), param_dict.copy())
-        self.assertTrue(all(x == "" for x in verification_responses), "At least one of the verification "
-                                                                      "responses was non-empty.")
+        self.assertTrue(all(x == b"" for x in verification_responses), "At least one of the verification "
+                                                                       "responses was non-empty.")
 
         param_dict['port'] = self.peer_list[1].port
         result = yield self._get_style_requests.make_outstanding_verify(param_dict)
 
         # Retrieve only the mids
-        result = [x[0] for x in result]
+        result = [x[0].encode('utf-8') for x in result]
 
         self.assertTrue(any(x in result for x in self.peer_list[0].get_mids(False)), "Something went wrong. Could not "
                                                                                      "find a master peer mid in the "
                                                                                      "outstanding verification "
                                                                                      "requests.")
 
-    @twisted_wrapper(30)
-    def test_get_attributes(self):
-        """
-        Test the (GET: attributes) request type
-        :return: None
-        """
-        param_dict = {
-            'port': self.peer_list[0].port,
-            'interface': self.peer_list[0].interface,
-            'endpoint': 'attestation'
-        }
-
-        block = TrustChainBlock()
-        block.public_key = self.peer_list[0].get_overlay_by_name('IdentityCommunity').my_peer.public_key.key_to_bin()
-        block.transaction = {'name': 123, 'hash': '123', 'metadata': b64encode(dumps({'psn': '1234567890'}))}
-
-        self.peer_list[0].get_overlay_by_name('IdentityCommunity').persistence.add_block(block)
-
-        result = yield self._get_style_requests.make_attributes(param_dict)
-
-        self.assertEqual(result, [[123, "MTIz", "eyJwc24iOiAiMTIzNDU2Nzg5MCJ9", "awzBTMhmU9B4lQuMxT1DS03TPfU="]],
-                         "The response was not as expected. This would suggest that something went wrong "
-                         "with the attributes request. The error: '%s'" % result)
-
-    @twisted_wrapper(30)
+    @inlineCallbacks
     def test_get_attributes_alternative(self):
         """
         Test the (GET: attributes) request type
@@ -389,14 +270,14 @@ class TestRESTAPI(unittest.TestCase):
             'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
-            'attribute_value': string_to_url(b64encode('binarydata'), True),
+            'attribute_value': string_to_url(b64encode(b'binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}).encode('utf-8'))
         }
 
         # Forward the attestations to the well-known peer
-        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
-                             other_verified_peers=[self.peer_list[0]])
+        self.create_new_peer(AndroidTestPeer, None, param_dict.copy(), other_verified_peers=[self.peer_list[0]],
+                             memory_dbs=True)
         self.peer_list[1].start()
 
         yield self.attest_all_outstanding_requests(param_dict.copy())
@@ -408,7 +289,7 @@ class TestRESTAPI(unittest.TestCase):
                         "The response was not as expected. This would suggest that something went wrong with "
                         "the attributes request.")
 
-    @twisted_wrapper(30)
+    @inlineCallbacks
     def test_get_drop_identity(self):
         """
         Test the (GET: drop identity) request type
@@ -419,14 +300,14 @@ class TestRESTAPI(unittest.TestCase):
             'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
-            'attribute_value': string_to_url(b64encode('binarydata'), True),
+            'attribute_value': string_to_url(b64encode(b'binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}).encode('utf-8'))
         }
 
         # Send a random attestation request to the well-known peer
-        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
-                             other_verified_peers=[self.peer_list[0]])
+        self.create_new_peer(AndroidTestPeer, None, param_dict.copy(), other_verified_peers=[self.peer_list[0]],
+                             memory_dbs=True)
         self.peer_list[1].start()
 
         outstanding_requests = yield self.wait_for_outstanding_requests(param_dict)
@@ -446,7 +327,7 @@ class TestRESTAPI(unittest.TestCase):
 
         # Drop the identity
         result = yield self._get_style_requests.make_drop_identity(param_dict)
-        self.assertEqual(result, "", "The identity could not be dropped. Received non-empty response.")
+        self.assertEqual(result, b"", "The identity could not be dropped. Received non-empty response.")
 
         # Make sure the identity was successfully dropped
         result = yield self._get_style_requests.make_attributes(param_dict)
@@ -455,7 +336,7 @@ class TestRESTAPI(unittest.TestCase):
         result = yield self._get_style_requests.make_outstanding(param_dict)
         self.assertEqual(result, [], 'The identity could not be dropped. Outstanding requests still remaining.')
 
-    @twisted_wrapper(30)
+    @inlineCallbacks
     def test_post_attestation_request(self):
         """
         Test the (POST: request) request type
@@ -466,7 +347,7 @@ class TestRESTAPI(unittest.TestCase):
             'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
-            'metadata': b64encode(dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}).encode('utf-8'))
         }
 
         # This should return an empty response
@@ -474,15 +355,15 @@ class TestRESTAPI(unittest.TestCase):
 
         self.assertEqual(outstanding_requests, [], "Something went wrong, there should be no outstanding requests.")
 
-        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
-                             other_verified_peers=[self.peer_list[0]])
+        self.create_new_peer(AndroidTestPeer, None, param_dict.copy(), other_verified_peers=[self.peer_list[0]],
+                             memory_dbs=True)
         self.peer_list[1].start()
 
         # This should return a non-empty response
         outstanding_requests = yield self.wait_for_outstanding_requests(param_dict)
         self.assertFalse(outstanding_requests == [], "Something went wrong, no request was received.")
 
-    @twisted_wrapper(30)
+    @inlineCallbacks
     def test_post_attest(self):
         """
         Test the (POST: attest) request type
@@ -493,12 +374,12 @@ class TestRESTAPI(unittest.TestCase):
             'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
-            'attribute_value': string_to_url(b64encode('binarydata'), True),
-            'metadata': b64encode(dumps({'psn': '1234567890'}))
+            'attribute_value': string_to_url(b64encode(b'binarydata'), True),
+            'metadata': b64encode(dumps({'psn': '1234567890'}).encode('utf-8'))
         }
 
-        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
-                             other_verified_peers=[self.peer_list[0]])
+        self.create_new_peer(AndroidTestPeer, None, param_dict.copy(), other_verified_peers=[self.peer_list[0]],
+                             memory_dbs=True)
         self.peer_list[1].start()
 
         param_dict['port'] = self.peer_list[1].port
@@ -507,7 +388,7 @@ class TestRESTAPI(unittest.TestCase):
 
         param_dict['port'] = self.peer_list[0].port
         responses = yield self.attest_all_outstanding_requests(param_dict.copy())
-        self.assertTrue(all(x == "" for x in responses[1]), "Something went wrong, not all responses were empty.")
+        self.assertTrue(all(x == b"" for x in responses[1]), "Something went wrong, not all responses were empty.")
 
         param_dict['port'] = self.peer_list[1].port
         attributes = yield self._get_style_requests.make_attributes(param_dict)
@@ -516,7 +397,7 @@ class TestRESTAPI(unittest.TestCase):
                                                                           "%s" % (param_dict['attribute_name'],
                                                                                   attributes[0][0]))
 
-    @twisted_wrapper(30)
+    @inlineCallbacks
     def test_post_verify(self):
         """
         Test the (POST: verify) request type
@@ -527,14 +408,14 @@ class TestRESTAPI(unittest.TestCase):
             'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
-            'attribute_value': string_to_url(b64encode('binarydata'), True),
+            'attribute_value': string_to_url(b64encode(b'binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}).encode('utf-8'))
         }
 
         # Forward the attestations to the well-known peer
-        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
-                             other_verified_peers=[self.peer_list[0]])
+        self.create_new_peer(AndroidTestPeer, None, param_dict.copy(), other_verified_peers=[self.peer_list[0]],
+                             memory_dbs=True)
         self.peer_list[1].start()
 
         yield self.attest_all_outstanding_requests(param_dict.copy())
@@ -549,10 +430,10 @@ class TestRESTAPI(unittest.TestCase):
         # Forward the actual verification
         verification_responses = yield self.verify_all_attestations(other_peer_mids, param_dict.copy())
 
-        self.assertTrue(all(x == "" for x in verification_responses), "At least one of the verification "
-                                                                      "responses was non-empty.")
+        self.assertTrue(all(x == b"" for x in verification_responses), "At least one of the verification "
+                                                                       "responses was non-empty.")
 
-    @twisted_wrapper(30)
+    @inlineCallbacks
     def test_post_allow_verify(self):
         """
         Test the (POST: allow verify) request type
@@ -563,14 +444,14 @@ class TestRESTAPI(unittest.TestCase):
             'interface': self.peer_list[0].interface,
             'endpoint': 'attestation',
             'attribute_name': 'QR',
-            'attribute_value': string_to_url(b64encode('binarydata'), True),
+            'attribute_value': string_to_url(b64encode(b'binarydata'), True),
             'attribute_values': 'YXNk,YXNkMg==',
-            'metadata': b64encode(dumps({'psn': '1234567890'}))
+            'metadata': b64encode(dumps({'psn': '1234567890'}).encode('utf-8'))
         }
 
         # Forward the attestations to the well-known peer
-        self.create_new_peer(AndroidTestPeer, 'temp_local_peer', None, param_dict.copy(),
-                             other_verified_peers=[self.peer_list[0]])
+        self.create_new_peer(AndroidTestPeer, None, param_dict.copy(), other_verified_peers=[self.peer_list[0]],
+                             memory_dbs=True)
         self.peer_list[1].start()
 
         yield self.attest_all_outstanding_requests(param_dict.copy())
@@ -581,12 +462,11 @@ class TestRESTAPI(unittest.TestCase):
 
         # Forward the actual verification
         verification_responses = yield self.verify_all_attestations(self.peer_list[1].get_mids(), param_dict.copy())
-        self.assertTrue(all(x == "" for x in verification_responses), "At least one of the verification "
-                                                                      "responses was non-empty.")
+        self.assertTrue(all(x == b"" for x in verification_responses), "At least one of the verification "
+                                                                       "responses was non-empty.")
 
         # Unlock the verification
         param_dict['port'] = self.peer_list[1].port
-
         outstanding_verifications = yield self._get_style_requests.make_outstanding_verify(param_dict)
         self.assertIsNotNone(outstanding_verifications, "Could not retrieve any outstanding verifications")
 
@@ -594,4 +474,4 @@ class TestRESTAPI(unittest.TestCase):
 
         response = yield self._post_style_requests.make_allow_verify(param_dict)
 
-        self.assertEqual("", response, "The attestation could not be unlocked.")
+        self.assertEqual(b"", response, "The attestation could not be unlocked.")

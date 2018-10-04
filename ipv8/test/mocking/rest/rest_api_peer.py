@@ -1,37 +1,18 @@
 import logging
-import os
 import threading
 from base64 import b64encode
-from random import choice
-from shutil import rmtree
-from string import ascii_letters
-from time import time
 
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks, returnValue
+from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred
 from twisted.internet.task import deferLater
 from twisted.web import server
 
-from ipv8.attestation.identity.community import IdentityCommunity
-from ipv8.attestation.wallet.community import AttestationCommunity
-from ipv8_service import IPv8
 from .peer_communication import GetStyleRequests, PostStyleRequests
 from .rest_peer_communication import HTTPGetRequester, HTTPPostRequester, string_to_url
+from .ipv8 import TestIPv8
 from ....REST.rest_manager import RESTRequest
 from ....REST.root_endpoint import RootEndpoint
-from ....configuration import get_default_configuration
-from ....keyvault.crypto import ECCrypto
-from ....peer import Peer
 from ....taskmanager import TaskManager
-
-COMMUNITY_TO_MASTER_PEER_KEY = {
-    'AttestationCommunity': ECCrypto().generate_key(u'high'),
-    'DiscoveryCommunity': ECCrypto().generate_key(u'high'),
-    'HiddenTunnelCommunity': ECCrypto().generate_key(u'high'),
-    'IdentityCommunity': ECCrypto().generate_key(u'high'),
-    'TrustChainCommunity': ECCrypto().generate_key(u'high'),
-    'TunnelCommunity': ECCrypto().generate_key(u'high')
-}
 
 
 class TestPeer(object):
@@ -39,15 +20,13 @@ class TestPeer(object):
     Class for the purpose of testing the REST API
     """
 
-    def __init__(self, path, port, interface='127.0.0.1', configuration=None, other_verified_peers=None):
+    def __init__(self, port, interface='127.0.0.1', other_verified_peers=None, memory_dbs=True):
         """
         Create a test peer with a REST API interface. All subclasses of this class should maintain path and port as
         the first and second argument in the initializer method.
 
-        :param path: the for the working directory of this peer
         :param port: this peer's port
         :param interface: IP or alias of the peer. Defaults to '127.0.0.1'
-        :param configuration: IPv8 configuration object. Defaults to None
         :param other_verified_peers: a list of TestPeer which will be immediately added as verified peers
         """
         self._logger = logging.getLogger(self.__class__.__name__)
@@ -58,37 +37,7 @@ class TestPeer(object):
         self._port = port
         self._interface = interface
 
-        self._configuration = configuration
-
-        # Check to see if we've received a custom configuration
-        if configuration is None:
-            # Create a default configuration
-            self._configuration = get_default_configuration()
-
-            self._configuration['logger'] = {'level': "ERROR"}
-
-            overlays = ['AttestationCommunity', 'IdentityCommunity']
-            self._configuration['overlays'] = [o for o in self._configuration['overlays'] if o['class'] in overlays]
-            for o in self._configuration['overlays']:
-                o['walkers'] = [{
-                    'strategy': "RandomWalk",
-                    'peers': 20,
-                    'init': {
-                        'timeout': 60.0
-                    }
-                }]
-
-        os.chdir(os.path.dirname(__file__))
-        self._path = self._create_working_directory(path)
-        self._logger.info("Created working directory.")
-        os.chdir(self._path)
-
-        self._ipv8 = IPv8(self._configuration)
-        os.chdir(os.path.dirname(__file__))
-
-        # Change the master_peers of the IPv8 object's overlays, in order to avoid conflict with the live networks
-        for idx, overlay in enumerate(self._ipv8.overlays):
-            self._ipv8.overlays[idx].master_peer = Peer(COMMUNITY_TO_MASTER_PEER_KEY[type(overlay).__name__])
+        self._ipv8 = TestIPv8(u'curve25519', port, interface, memory_dbs)
 
         self._rest_manager = TestPeer.RestAPITestWrapper(self._ipv8, self._port, self._interface)
         self._rest_manager.start()
@@ -177,39 +126,10 @@ class TestPeer(object):
         """
         self._logger.info("Shutting down the peer")
 
-        # If the looping call is running, then stop it
-        if self._ipv8.state_machine_lc.running:
-            self._ipv8.state_machine_lc.stop()
-
-        self._ipv8.endpoint.close()
-        for overlay in self._ipv8.overlays:
-            # Close the DBs since simply unloading will usually not do
-            if isinstance(overlay, AttestationCommunity):
-                overlay.database.close()
-            elif isinstance(overlay, IdentityCommunity):
-                overlay.persistence.close()
-            overlay.unload()
-
         self._rest_manager.stop()
         self._rest_manager.shutdown_task_manager()
 
-    @staticmethod
-    def _create_working_directory(path, append_time=True):
-        """
-        Creates a dir at the specified path, if not previously there; otherwise deletes the dir, and makes a new one.
-
-        :param path: the location at which the dir is created
-        :return: None
-        """
-        if append_time:
-            # For exatra safety, we'll also append some random charaters to the end of the file
-            path += str(int(time())) + ''.join(choice(ascii_letters) for _ in range(10))
-
-        if os.path.isdir(path):
-            rmtree(path)
-
-        os.makedirs(path)
-        return path
+        self._ipv8.unload()
 
     def get_keys(self):
         """
@@ -229,7 +149,7 @@ class TestPeer(object):
         :return: a list of the peer's mids (encoded in b64)
         """
         if replace_characters:
-            return [string_to_url(b64encode(x.mid)) for x in self._ipv8.keys.values()]
+            return [b64encode(x.mid) for x in self._ipv8.keys.values()]
 
         return [b64encode(x.mid) for x in self._ipv8.keys.values()]
 
@@ -242,7 +162,7 @@ class TestPeer(object):
         """
         return string_to_url(b64encode(self._ipv8.keys[key].mid)) if key in self._ipv8.keys else ''
 
-    def get_overlay_by_name(self, name):
+    def get_overlay_by_class(self, name):
         """
         Get one of the peer's overlays as identified by its name
 
@@ -251,7 +171,7 @@ class TestPeer(object):
         """
         self._logger.info("Fetching my IPv8 object's overlay: %s", name)
         for overlay in self._ipv8.overlays:
-            if type(overlay).__name__ == name:
+            if isinstance(overlay, name):
                 return overlay
 
         return None
@@ -281,6 +201,7 @@ class TestPeer(object):
             self._logger = logging.getLogger(self.__class__.__name__)
             self._session = session
             self._site = None
+            self._site_port = None
             self._root_endpoint = None
             self._port = port
             self._interface = interface
@@ -292,13 +213,14 @@ class TestPeer(object):
             self._root_endpoint = RootEndpoint(self._session)
             self._site = server.Site(resource=self._root_endpoint)
             self._site.requestFactory = RESTRequest
-            self._site = reactor.listenTCP(self._port, self._site, interface=self._interface)
+            self._site_port = reactor.listenTCP(self._port, self._site, interface=self._interface)
 
         def stop(self):
             """
             Stop the HTTP API and return a deferred that fires when the server has shut down.
             """
-            self._site.stopListening()
+            self._site.stopFactory()
+            return maybeDeferred(self._site_port.stopListening)
 
         def get_access_parameters(self):
             """
@@ -319,25 +241,25 @@ class InteractiveTestPeer(TestPeer, threading.Thread):
     implement the actual main logic of the peer in the run() method (from Thread).
     """
 
-    def __init__(self, path, port, interface='127.0.0.1', configuration=None, get_style_requests=None,
-                 post_style_requests=None, other_verified_peers=None):
+    def __init__(self, port, interface='127.0.0.1', memory_dbs=True, get_style_requests=None, post_style_requests=None,
+                 other_verified_peers=None):
         """
         InteractiveTestPeer initializer
 
-        :param path: the for the working directory of this peer
         :param port: this peer's port
         :param interface: IP or alias of the peer. Defaults to '127.0.0.1'
-        :param configuration: IPv8 configuration object. Defaults to None
         :param get_style_requests: GET style request generator. Defaults to None
         :param post_style_requests: POST style request generator. Defaults to None
         :param other_verified_peers: a list of TestPeer which will be immediately added as verified peers
+        :param memory_dbs: if True, then the DBs of the various overlays / communities are stored in memory; on disk
+                           if False
         """
         assert get_style_requests is None or isinstance(get_style_requests, GetStyleRequests), \
             "The get_style_requests parameter must be a subclass of GetStyleRequests"
         assert post_style_requests is None or isinstance(post_style_requests, PostStyleRequests), \
             "The post_style_requests parameter must be a subclass of PostStyleRequests"
 
-        TestPeer.__init__(self, path, port, interface, configuration, other_verified_peers)
+        TestPeer.__init__(self, port, interface, other_verified_peers, memory_dbs)
         threading.Thread.__init__(self)
 
         # Check to see if the user has provided request generators
