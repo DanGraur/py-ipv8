@@ -29,7 +29,7 @@ class MockIPv8(object):
         if create_trustchain:
             self.trustchain = TrustChainCommunity(self.my_peer, self.endpoint, self.network,
                                                   working_directory=u":memory:")
-            kwargs.update({'trustchain': self.trustchain})
+            # kwargs.update({'trustchain': self.trustchain})
 
         # Load a DHT community if specified
         self.dht = None

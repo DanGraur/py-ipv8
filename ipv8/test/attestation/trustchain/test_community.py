@@ -298,6 +298,24 @@ class TestTrustChainCommunity(TestBase):
         self.assertTrue(self.nodes[1].overlay.persistence.get_latest(block2.public_key))
 
     @inlineCallbacks
+    def test_dht_publish(self):
+        """
+        TEMP: test the publish operation of a block
+        :return: None
+        """
+        key = self.nodes[0].my_peer.key
+        block1 = TestBlock(key=key)
+        self.nodes[0].overlay.persistence.add_block(block1)
+        returned_block = self.nodes[0].overlay.persistence.get_latest(key.pub().key_to_bin())
+        print "The returned block", returned_block
+        print block1.public_key, '\n', self.nodes[0].my_peer.public_key.key_to_bin()
+        yield 1
+        self.assertEqual(block1.public_key, self.nodes[0].my_peer.public_key.key_to_bin())
+
+        # Add the block to the DHT
+        print "The DHT object:", self.nodes[0].dht
+
+    @inlineCallbacks
     def test_broadcast_half_block(self):
         """
         Test broadcasting a half block

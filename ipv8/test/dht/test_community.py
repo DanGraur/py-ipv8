@@ -4,12 +4,14 @@ import time
 
 from twisted.internet.defer import succeed, Deferred, inlineCallbacks
 
+from ..attestation.trustchain.test_block import TestBlock
 from ..base import TestBase
 from ..mocking.ipv8 import MockIPv8
-from ...dht.community import DHTCommunity
+from ...dht.community import DHTCommunity, MAX_ENTRY_SIZE
 from ...dht.provider import DHTCommunityProvider
 from ...dht.routing import Node, distance, NODE_LIMIT_QUERIES
 from ...util import maximum_integer
+from ...attestation.trustchain.payload import HalfBlockPayload
 
 
 class TestDHTCommunity(TestBase):
@@ -35,7 +37,75 @@ class TestDHTCommunity(TestBase):
                 node1.overlay.tokens[dht_node2] = (now, node2.overlay.generate_token(dht_node1))
 
     def create_node(self, *args, **kwargs):
-        return MockIPv8(u"curve25519", DHTCommunity)
+        return MockIPv8(u"curve25519", DHTCommunity, create_trustchain=True)
+
+    @inlineCallbacks
+    def test_dht_publish(self):
+        """
+        TEMP: test the publish operation of a block
+        :return: None
+        """
+        yield self.introduce_nodes()
+        key = self.nodes[0].my_peer.key
+        block1 = TestBlock(key=key)
+        self.nodes[0].trustchain.persistence.add_block(block1)
+        returned_block = self.nodes[0].trustchain.persistence.get_latest(key.pub().key_to_bin())
+        print "The returned block", returned_block
+        print block1.public_key, '\n', self.nodes[0].my_peer.public_key.key_to_bin()
+        self.assertEqual(block1.public_key, self.nodes[0].my_peer.public_key.key_to_bin())
+
+        # yield self.introduce_nodes()
+        # node = yield self.nodes[0].overlay.store_value(self.key, self.value)
+        # self.assertIn(self.nodes[1].my_peer, node)
+        # self.assertEqual(self.nodes[1].overlay.storage.get(self.key), [self.value_in_store])
+
+        packed_block = block1.pack()
+        print "The packed blob", packed_block, type(packed_block)
+        for i in range(0, len(packed_block), MAX_ENTRY_SIZE-1):
+            blob_chunk = packed_block[i:i+MAX_ENTRY_SIZE-1]
+            node = yield self.nodes[0].overlay.store_value(b'\x00' * 20,  blob_chunk)
+
+        # node = yield self.nodes[0].overlay.store_value(b'\x00' * 20,  block1.pack())
+        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'123')
+        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'1234')
+        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'asd')
+        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'523')
+        # node = self.nodes[0].overlay.store_value('asd_asd', block1.pack())
+        # self.assertIn(self.nodes[1].my_peer, node)
+        print self.nodes[1].overlay.storage.get(self.key)
+        print self.nodes[1].overlay.storage.get(b'\x01' * 20)
+
+        the_list = self.nodes[1].overlay.storage.get(self.key)
+
+        the_list = reduce(lambda x, y: y + x, the_list)
+        print "Reconstruction:\t", the_list, len(the_list), len(packed_block), len(the_list) == len(packed_block)
+
+        # We'll try to reconstruct the block here
+
+        # So this is the original serialized block. This was not reconstructed on the receiving side, but rather
+        # reconstructed from the original data
+        payload = self.nodes[1].trustchain.serializer.unpack_to_serializables((HalfBlockPayload, ), packed_block)
+        payload = payload[:-1][0]
+        print "The payload", payload
+        reconstructed_block = self.nodes[1].trustchain.get_block_class(payload.type)\
+            .from_payload(payload, self.nodes[1].trustchain.serializer)
+
+        print reconstructed_block, type(reconstructed_block), reconstructed_block == block1
+
+        # TODO: there's an offset here of about 3
+        delta = 3
+        print "The raw blocks"
+        print "A", the_list
+        print "B", packed_block
+        for i in xrange(len(the_list)):
+            if the_list[i] != packed_block[i + delta]:
+                print "Found difference", the_list[i], packed_block[i + delta], i
+
+        payload = self.nodes[1].trustchain.serializer.unpack_to_serializables((HalfBlockPayload, ), the_list)
+        payload = payload[:-1][0]
+        print "The payload", payload
+        self.nodes[1].trustchain.get_block_class(payload.type).from_payload(payload,
+                                                                            self.nodes[1].trustchain.serializer)
 
     @inlineCallbacks
     def test_routing_table(self):

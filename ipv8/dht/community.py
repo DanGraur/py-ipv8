@@ -31,6 +31,7 @@ PING_INTERVAL = 25
 DHT_ENTRY_STR = 0
 DHT_ENTRY_STR_SIGNED = 1
 
+# TODO: I've changed the MAX_ENTRY_SIZE from 155 to 15555; need to change that back!
 MAX_ENTRY_SIZE = 155
 MAX_ENTRY_AGE = 86400
 
