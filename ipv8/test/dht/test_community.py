@@ -68,10 +68,10 @@ class TestDHTCommunity(TestBase):
             node = yield self.nodes[0].overlay.store_value(b'\x00' * 20,  blob_chunk)
 
         # node = yield self.nodes[0].overlay.store_value(b'\x00' * 20,  block1.pack())
-        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'123')
-        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'1234')
-        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'asd')
-        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'523')
+        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'123', True)
+        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'1234', True)
+        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'asd', True)
+        yield self.nodes[0].overlay.store_value(b'\x01' * 20, b'523', True)
         # node = self.nodes[0].overlay.store_value('asd_asd', block1.pack())
         # self.assertIn(self.nodes[1].my_peer, node)
         print self.nodes[1].overlay.storage.get(self.key)
@@ -111,6 +111,82 @@ class TestDHTCommunity(TestBase):
         yield deferLater(reactor, 30, lambda: None)
         print "Here"
         print self.nodes[1].overlay.storage.get(b'\x01' * 20)
+
+    @inlineCallbacks
+    def test_dht_publish_multiple_versions(self):
+        """
+        TEMP: test the publish operation of a block
+        :return: None
+        """
+        yield self.introduce_nodes()
+        key = self.nodes[0].my_peer.key
+        block1 = TestBlock(key=key, transaction={b'id': 45})
+        block2 = TestBlock(key=key, transaction={b'id': 47})
+        self.nodes[0].trustchain.persistence.add_block(block1)
+        self.nodes[0].trustchain.persistence.add_block(block2)
+        self.assertEqual(block1.public_key, self.nodes[0].my_peer.public_key.key_to_bin())
+
+        # yield self.introduce_nodes()
+        # node = yield self.nodes[0].overlay.store_value(self.key, self.value)
+        # self.assertIn(self.nodes[1].my_peer, node)
+        # self.assertEqual(self.nodes[1].overlay.storage.get(self.key), [self.value_in_store])
+
+        from struct import pack, unpack
+
+        # Packing the first block
+        packed_block_1 = block1.pack()
+
+        version_1 = pack("H", 30001)
+        for i in range(0, len(packed_block_1), MAX_ENTRY_SIZE-3):
+            blob_chunk = version_1 + packed_block_1[i:i+MAX_ENTRY_SIZE-3]
+            yield self.nodes[0].overlay.store_value(b'\x00' * 20,  blob_chunk)
+
+        the_list = self.nodes[1].overlay.storage.get(self.key)
+        print the_list
+
+        # Packing the second block
+        packed_block_2 = block2.pack()
+
+        version_2 = pack("H", 62341)
+        for i in range(0, len(packed_block_2), MAX_ENTRY_SIZE-3):
+            blob_chunk = version_2 + packed_block_2[i:i+MAX_ENTRY_SIZE-3]
+            yield self.nodes[0].overlay.store_value(b'\x00' * 20,  blob_chunk)
+
+        the_list = self.nodes[1].overlay.storage.get(self.key)
+        print the_list
+        # print packed_block_2.encode('utf-8')
+
+        new_blocks = {}
+        max_version = 0
+
+        for entry in the_list:
+            this_version = unpack("I", entry[1:3] + '\x00\x00')[0]
+            max_version = max_version if max_version > this_version else this_version
+
+            if this_version in new_blocks:
+                new_blocks[this_version] = entry[3:] + new_blocks[this_version]
+            else:
+                new_blocks[this_version] = entry[3:]
+
+        payload = self.nodes[1].trustchain.serializer.unpack_to_serializables((HalfBlockPayload, ), packed_block_1)
+        payload = payload[:-1][0]
+        reconstructed_block = self.nodes[1].trustchain.get_block_class(payload.type)\
+            .from_payload(payload, self.nodes[1].trustchain.serializer)
+
+        # print reconstructed_block, type(reconstructed_block), reconstructed_block == block1
+
+        # This is the received block.
+        payload = self.nodes[1].trustchain.serializer.unpack_to_serializables((HalfBlockPayload, ),
+                                                                              new_blocks[max_version])
+        payload = payload[:-1][0]
+        new_reconstructed_block = self.nodes[1].trustchain.get_block_class(payload.type)\
+            .from_payload(payload, self.nodes[1].trustchain.serializer)
+        # print new_reconstructed_block, type(new_reconstructed_block), new_reconstructed_block == block1
+
+        self.assertNotEqual(block1, block2, "The blocks should be different")
+        self.assertEqual(reconstructed_block, block1, "The initial reconstructed block should be identical to the "
+                                                      "original")
+        self.assertEqual(new_reconstructed_block, block2, "The DHT block should be identical to the original one")
 
     @inlineCallbacks
     def test_routing_table(self):
