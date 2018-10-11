@@ -2,7 +2,9 @@ from __future__ import absolute_import
 
 import time
 
+from twisted.internet import reactor
 from twisted.internet.defer import succeed, Deferred, inlineCallbacks
+from twisted.internet.task import deferLater
 
 from ..attestation.trustchain.test_block import TestBlock
 from ..base import TestBase
@@ -77,7 +79,14 @@ class TestDHTCommunity(TestBase):
 
         the_list = self.nodes[1].overlay.storage.get(self.key)
 
-        the_list = reduce(lambda x, y: y + x, the_list)
+        # So there is an issue here: when a string is stored in the DHT, a '\x00' is added to the beginning of each
+        # entry. This needs to be removed, otherwise it adds an extra element to each chink
+        the_list = reduce(lambda x, y: y[1:] + x, the_list, '')
+
+        # TODO: need to add a means through which the entry is replaced by another new one, when a new block is added to
+        # the TC; obviously, currently values are only appended to the DHT entry; might need to add new methods to
+        # the Storage class and/or the DHTCommunity class
+
         print "Reconstruction:\t", the_list, len(the_list), len(packed_block), len(the_list) == len(packed_block)
 
         # We'll try to reconstruct the block here
@@ -86,26 +95,22 @@ class TestDHTCommunity(TestBase):
         # reconstructed from the original data
         payload = self.nodes[1].trustchain.serializer.unpack_to_serializables((HalfBlockPayload, ), packed_block)
         payload = payload[:-1][0]
-        print "The payload", payload
         reconstructed_block = self.nodes[1].trustchain.get_block_class(payload.type)\
             .from_payload(payload, self.nodes[1].trustchain.serializer)
 
         print reconstructed_block, type(reconstructed_block), reconstructed_block == block1
 
-        # TODO: there's an offset here of about 3
-        delta = 3
-        print "The raw blocks"
-        print "A", the_list
-        print "B", packed_block
-        for i in xrange(len(the_list)):
-            if the_list[i] != packed_block[i + delta]:
-                print "Found difference", the_list[i], packed_block[i + delta], i
-
+        # This is the received block.
         payload = self.nodes[1].trustchain.serializer.unpack_to_serializables((HalfBlockPayload, ), the_list)
         payload = payload[:-1][0]
-        print "The payload", payload
-        self.nodes[1].trustchain.get_block_class(payload.type).from_payload(payload,
-                                                                            self.nodes[1].trustchain.serializer)
+        new_reconstructed_block = self.nodes[1].trustchain.get_block_class(payload.type)\
+            .from_payload(payload, self.nodes[1].trustchain.serializer)
+        print new_reconstructed_block, type(new_reconstructed_block), new_reconstructed_block == block1
+
+        # Try to see if the value has been removed from the DB
+        yield deferLater(reactor, 30, lambda: None)
+        print "Here"
+        print self.nodes[1].overlay.storage.get(b'\x01' * 20)
 
     @inlineCallbacks
     def test_routing_table(self):

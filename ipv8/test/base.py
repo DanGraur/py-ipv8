@@ -28,7 +28,7 @@ class TestBase(unittest.TestCase):
     __lockup_timestamp__ = 0
 
     # The time after which the whole test suite is os.exited
-    MAX_TEST_TIME = 10
+    MAX_TEST_TIME = 1000
 
     def __init__(self, methodName='runTest'):
         super(TestBase, self).__init__(methodName)
