@@ -2,12 +2,15 @@ from __future__ import absolute_import
 
 from base64 import b64encode
 from binascii import hexlify, unhexlify
+from hashlib import sha1
 import json
+import struct
 
 from twisted.web import http, resource
 from twisted.web.server import NOT_DONE_YET
 
-from ..dht.community import DHTCommunity
+from ..dht.community import DHTCommunity, MAX_ENTRY_SIZE
+from ..attestation.trustchain.community import TrustChainCommunity
 from ..dht.discovery import DHTDiscoveryCommunity
 
 
@@ -20,10 +23,78 @@ class DHTEndpoint(resource.Resource):
         resource.Resource.__init__(self)
 
         dht_overlays = [overlay for overlay in session.overlays if isinstance(overlay, DHTCommunity)]
+        tc_overlays = [overlay for overlay in session.overlays if isinstance(overlay, TrustChainCommunity)]
         if dht_overlays:
             self.putChild("statistics", DHTStatisticsEndpoint(dht_overlays[0]))
             self.putChild("values", DHTValuesEndpoint(dht_overlays[0]))
             self.putChild("peers", DHTPeersEndpoint(dht_overlays[0]))
+            self.putChild("block", DHTBlockEndpoint(dht_overlays[0], tc_overlays[0]))
+
+
+class DHTBlockEndpoint(resource.Resource):
+    """
+    This endpoint is responsible for returning the latest Trustchain block of a peer. Additionally, it ensures
+    this peer's latest TC block is available
+    """
+
+    KEY_SUFFIX = b'_BLOCK'
+
+    def __init__(self, dht, trustchain):
+        resource.Resource.__init__(self)
+        self.dht = dht
+        self.trustchain = trustchain
+        self.block_version = 0
+
+        self._hashed_dht_key = sha1(self.trustchain.my_peer.key.pub().key_to_bin() + self.KEY_SUFFIX)
+
+        trustchain.set_new_block_cb(self.publish_latest_block)
+
+    def publish_latest_block(self):
+        """
+        Publish the latest block of this node's Trustchain to the DHT
+
+        :return:
+        """
+        latest_block = self.trustchain.persistence.get_latest(self.trustchain.my_peer.key.pub().key_to_bin()).pack()
+
+        version = struct.pack("H", self.block_version)
+        self.block_version += 1
+
+        for i in range(0, len(latest_block), MAX_ENTRY_SIZE - 3):
+            blob_chunk = version + latest_block[i:i + MAX_ENTRY_SIZE - 3]
+            yield self.dht.store_value(self._hashed_dht_key, blob_chunk)
+
+    def render_GET(self, request):
+        """
+        Return the latest TC block of a peer, as identified in the request
+
+        :param request: the request for retrieving the latest TC block of a peer. It must contain the peer's
+        public key of the peer
+        :return: the latest block of the peer, if found
+        """
+        if not self.dht:
+            request.setResponseCode(http.NOT_FOUND)
+            return json.dumps({"error": "DHT community not found"})
+
+        if not request.args or 'public_key' not in request.args:
+            request.setResponseCode(http.BAD_REQUEST)
+            return json.dumps({"error": "Must specify the peer's public key"})
+
+        block_chunks = self.dht.storage.get(sha1(request['public_key'][0] + self.KEY_SUFFIX))
+
+        new_blocks = {}
+        max_version = 0
+
+        for entry in block_chunks:
+            this_version = struct.unpack("I", entry[1:3] + '\x00\x00')[0]
+            max_version = max_version if max_version > this_version else this_version
+
+            if this_version in new_blocks:
+                new_blocks[this_version] = entry[3:] + new_blocks[this_version]
+            else:
+                new_blocks[this_version] = entry[3:]
+
+        return json.dumps({"block": new_blocks[max_version]})
 
 
 class DHTStatisticsEndpoint(resource.Resource):

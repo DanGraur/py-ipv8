@@ -73,6 +73,8 @@ class TrustChainCommunity(Community):
         self.db_cleanup_lc = self.register_task("db_cleanup", LoopingCall(self.do_db_cleanup))
         self.db_cleanup_lc.start(600)
 
+        self.new_block_cb = lambda: None
+
         self.decode_map.update({
             chr(1): self.received_half_block,
             chr(2): self.received_crawl_request,
@@ -82,6 +84,13 @@ class TrustChainCommunity(Community):
             chr(6): self.received_half_block_pair_broadcast,
             chr(7): self.received_empty_crawl_response,
         })
+
+    def set_new_block_cb(self, f):
+        """
+        Set the callback for when a new block is added to the DB. The callback should take no arguments and should
+        return nothing: [] -> None
+        """
+        self.new_block_cb = f
 
     def do_db_cleanup(self):
         """
@@ -250,6 +259,7 @@ class TrustChainCommunity(Community):
 
         if not self.persistence.contains(block):
             self.persistence.add_block(block)
+            self.new_block_cb()
             self.notify_listeners(block)
 
         # This is a source block with no counterparty
@@ -341,6 +351,7 @@ class TrustChainCommunity(Community):
             pass
         elif not self.persistence.contains(block):
             self.persistence.add_block(block)
+            self.new_block_cb()
             self.notify_listeners(block)
 
         return validation
