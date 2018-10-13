@@ -74,13 +74,20 @@ class DHTBlockEndpoint(resource.Resource):
         """
         if not self.dht:
             request.setResponseCode(http.NOT_FOUND)
-            return json.dumps({"error": "DHT community not found"})
+            return json.dumps({"error": "DHT community not found"}).encode('utf-8')
 
         if not request.args or 'public_key' not in request.args:
             request.setResponseCode(http.BAD_REQUEST)
-            return json.dumps({"error": "Must specify the peer's public key"})
+            return json.dumps({"error": "Must specify the peer's public key"}).encode('utf-8')
 
-        block_chunks = self.dht.storage.get(sha1(request['public_key'][0] + self.KEY_SUFFIX))
+        block_chunks = self.dht.storage.get(sha1(request.args[b'public_key'][0] + self.KEY_SUFFIX))
+
+        if not block_chunks:
+            request.setResponseCode(http.NOT_FOUND)
+            return json.dumps({"error": "Could not find a block for the specified key."}).encode('utf-8')
+
+        print "The public key", request.args[b'public_key'][0]
+        print "The block chunks", block_chunks
 
         new_blocks = {}
         max_version = 0
@@ -94,7 +101,7 @@ class DHTBlockEndpoint(resource.Resource):
             else:
                 new_blocks[this_version] = entry[3:]
 
-        return json.dumps({"block": new_blocks[max_version]})
+        return json.dumps({"block": new_blocks[max_version]}).encode('utf-8')
 
 
 class DHTStatisticsEndpoint(resource.Resource):

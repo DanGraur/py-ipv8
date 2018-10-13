@@ -2,7 +2,7 @@ import threading
 
 from twisted.internet.task import LoopingCall
 
-from .comunities import TestIdentityCommunity, TestAttestationCommunity
+from .comunities import TestIdentityCommunity, TestAttestationCommunity, TestDHTCommunity, TestTrustchainCommunity
 from ....keyvault.crypto import ECCrypto
 from ....messaging.interfaces.udp.endpoint import UDPEndpoint
 from ....peer import Peer
@@ -25,7 +25,9 @@ class TestIPv8(object):
         database_working_dir = u":memory:" if memory_dbs else u""
         self.overlays = [
             TestIdentityCommunity(my_peer, self.endpoint, self.network, working_directory=database_working_dir),
-            TestAttestationCommunity(my_peer, self.endpoint, self.network, working_directory=database_working_dir)
+            TestAttestationCommunity(my_peer, self.endpoint, self.network, working_directory=database_working_dir),
+            TestDHTCommunity(my_peer, self.endpoint, self.network),
+            TestTrustchainCommunity(my_peer, self.endpoint, self.network, working_directory=database_working_dir)
         ]
         self.strategies = [
             (RandomWalk(overlay), 20) for overlay in self.overlays
