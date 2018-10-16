@@ -58,8 +58,7 @@ class DHTBlockEndpoint(resource.Resource):
         :return:
         """
         # latest_block = self.trustchain.persistence.get_latest(self.trustchain.my_peer.key.pub().key_to_bin())
-        latest_block = self.trustchain.persistence.get_latest(self.trustchain.my_peer.key.key_to_bin())
-        print "Latest block", latest_block
+        latest_block = self.trustchain.persistence.get_latest(self.trustchain.my_peer.public_key.key_to_bin())
 
         if latest_block:
             latest_block = latest_block.pack()

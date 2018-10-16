@@ -57,7 +57,7 @@ class TestDHTEndpoint(RESTTestBase):
     @inlineCallbacks
     def test_added_block_explicit(self):
         """
-        Test the publication of a block which has been added by hand
+        Test the publication of a block which has been added by hand to the DHT
         """
         param_dict = {
             'port': self.peer_list[0].port,
@@ -81,6 +81,38 @@ class TestDHTEndpoint(RESTTestBase):
 
         # Reconstruct the block from what was received in the response
         payload = self.deserialize_payload((HalfBlockPayload, ), response)
+        reconstructed_block = self.peer_list[0].get_overlay_by_class(TrustChainCommunity).get_block_class(payload.type)\
+            .from_payload(payload, self.serializer)
+
+        self.assertEqual(reconstructed_block, original_block, "The received block was not the one which was expected")
+
+    @inlineCallbacks
+    def test_added_block_implicit(self):
+        """
+        Test the publication of a block which has been added implicitly to the DHT
+        """
+        param_dict = {
+            'port': self.peer_list[1].port,
+            'interface': self.peer_list[1].interface,
+            'endpoint': 'dht/block',
+            'public_key': string_to_url(b64encode(self.peer_list[0].get_keys()['my_peer'].mid))
+        }
+        # Introduce the nodes
+        yield self.introduce_nodes(DHTCommunity)
+
+        publisher_pk = self.peer_list[0].get_overlay_by_class(TrustChainCommunity).my_peer.public_key.key_to_bin()
+
+        yield self.peer_list[0].get_overlay_by_class(TrustChainCommunity).create_source_block(b'test', {})
+        original_block = self.peer_list[0].get_overlay_by_class(TrustChainCommunity).persistence.get(publisher_pk, 1)
+        yield self.deliver_messages()
+
+        # Get the block through the REST API
+        response = yield self._get_style_requests.make_dht_block(param_dict)
+        self.assertTrue(b'block' in response and response[b'block'], "Response is not as expected: {}".format(response))
+        response = b64decode(response[b'block'])
+
+        # Reconstruct the block from what was received in the response
+        payload = self.deserialize_payload((HalfBlockPayload,), response)
         reconstructed_block = self.peer_list[0].get_overlay_by_class(TrustChainCommunity).get_block_class(payload.type)\
             .from_payload(payload, self.serializer)
 
