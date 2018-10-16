@@ -4,7 +4,10 @@ from shutil import rmtree
 from string import ascii_uppercase, digits
 from threading import Thread
 
+from twisted.internet.task import deferLater
 from twisted.trial import unittest
+from twisted.internet import reactor
+from twisted.internet.defer import inlineCallbacks
 
 from .peer_communication import GetStyleRequests, PostStyleRequests
 from .rest_peer_communication import HTTPGetRequester, HTTPPostRequester
@@ -114,6 +117,45 @@ class RESTTestBase(unittest.TestCase):
         d = os.path.abspath(self.__class__.__name__ + random_string)
         os.makedirs(d)
         return d
+
+    @inlineCallbacks
+    def deliver_messages(self, timeout=.1):
+        """
+        Allow peers to communicate.
+
+        The strategy is as follows:
+         1. Measure the amount of working threads in the threadpool
+         2. After 10 milliseconds, check if we are down to 0 twice in a row
+         3. If not, go back to handling calls (step 2) or return, if the timeout has been reached
+
+        :param timeout: the maximum time to wait for messages to be delivered
+        """
+        rtime = 0
+        probable_exit = False
+        while (rtime < timeout):
+            yield self.sleep(.01)
+            rtime += .01
+            if len(reactor.getThreadPool().working) == 0:
+                if probable_exit:
+                    break
+                probable_exit = True
+            else:
+                probable_exit = False
+
+    @inlineCallbacks
+    def sleep(self, time=.05):
+        yield deferLater(reactor, time, lambda: None)
+
+    @inlineCallbacks
+    def introduce_nodes(self, overlay_class):
+        for node in self.peer_list:
+            node.add_and_verify_peers([other for other in self.peer_list if other != node])
+
+        for node in self.peer_list:
+            for other in self.peer_list:
+                if node != other:
+                    other.get_overlay_by_class(overlay_class).walk_to(node.get_address())
+        yield self.deliver_messages()
 
     def gracefully_terminate_peers(self):
         """

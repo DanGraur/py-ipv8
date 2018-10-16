@@ -1,11 +1,12 @@
 from __future__ import absolute_import
 
-from base64 import b64encode
+from base64 import b64encode, b64decode
 from binascii import hexlify, unhexlify
 from hashlib import sha1
 import json
 import struct
 
+from twisted.internet.defer import inlineCallbacks, returnValue
 from twisted.web import http, resource
 from twisted.web.server import NOT_DONE_YET
 
@@ -45,24 +46,29 @@ class DHTBlockEndpoint(resource.Resource):
         self.trustchain = trustchain
         self.block_version = 0
 
-        self._hashed_dht_key = sha1(self.trustchain.my_peer.key.pub().key_to_bin() + self.KEY_SUFFIX)
+        self._hashed_dht_key = sha1(self.trustchain.my_peer.mid + self.KEY_SUFFIX).hexdigest()
 
         trustchain.set_new_block_cb(self.publish_latest_block)
 
+    @inlineCallbacks
     def publish_latest_block(self):
         """
         Publish the latest block of this node's Trustchain to the DHT
 
         :return:
         """
-        latest_block = self.trustchain.persistence.get_latest(self.trustchain.my_peer.key.pub().key_to_bin()).pack()
+        # latest_block = self.trustchain.persistence.get_latest(self.trustchain.my_peer.key.pub().key_to_bin())
+        latest_block = self.trustchain.persistence.get_latest(self.trustchain.my_peer.key.key_to_bin())
+        print "Latest block", latest_block
 
-        version = struct.pack("H", self.block_version)
-        self.block_version += 1
+        if latest_block:
+            latest_block = latest_block.pack()
+            version = struct.pack("H", self.block_version)
+            self.block_version += 1
 
-        for i in range(0, len(latest_block), MAX_ENTRY_SIZE - 3):
-            blob_chunk = version + latest_block[i:i + MAX_ENTRY_SIZE - 3]
-            yield self.dht.store_value(self._hashed_dht_key, blob_chunk)
+            for i in range(0, len(latest_block), MAX_ENTRY_SIZE - 3):
+                blob_chunk = version + latest_block[i:i + MAX_ENTRY_SIZE - 3]
+                yield self.dht.store_value(self._hashed_dht_key, blob_chunk)
 
     def render_GET(self, request):
         """
@@ -80,14 +86,12 @@ class DHTBlockEndpoint(resource.Resource):
             request.setResponseCode(http.BAD_REQUEST)
             return json.dumps({"error": "Must specify the peer's public key"}).encode('utf-8')
 
-        block_chunks = self.dht.storage.get(sha1(request.args[b'public_key'][0] + self.KEY_SUFFIX))
+        hash_key = sha1(b64decode(request.args[b'public_key'][0]) + self.KEY_SUFFIX).hexdigest()
+        block_chunks = self.dht.storage.get(hash_key)
 
         if not block_chunks:
             request.setResponseCode(http.NOT_FOUND)
             return json.dumps({"error": "Could not find a block for the specified key."}).encode('utf-8')
-
-        print "The public key", request.args[b'public_key'][0]
-        print "The block chunks", block_chunks
 
         new_blocks = {}
         max_version = 0
@@ -101,7 +105,9 @@ class DHTBlockEndpoint(resource.Resource):
             else:
                 new_blocks[this_version] = entry[3:]
 
-        return json.dumps({"block": new_blocks[max_version]}).encode('utf-8')
+        print "***********************************************************************Away ", new_blocks[max_version]
+
+        return json.dumps({b"block": b64encode(new_blocks[max_version])}).encode('utf-8')
 
 
 class DHTStatisticsEndpoint(resource.Resource):
