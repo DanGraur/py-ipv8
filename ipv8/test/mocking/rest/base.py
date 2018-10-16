@@ -148,13 +148,12 @@ class RESTTestBase(unittest.TestCase):
 
     @inlineCallbacks
     def introduce_nodes(self, overlay_class):
-        for node in self.peer_list:
-            node.add_and_verify_peers([other for other in self.peer_list if other != node])
+        # for node in self.peer_list:
+        #     node.add_and_verify_peers([other for other in self.peer_list if other != node])
 
         for node in self.peer_list:
             for other in self.peer_list:
-                if node != other:
-                    other.get_overlay_by_class(overlay_class).walk_to(node.get_address())
+                other.get_overlay_by_class(overlay_class).walk_to(node.get_address())
         yield self.deliver_messages()
 
     def gracefully_terminate_peers(self):

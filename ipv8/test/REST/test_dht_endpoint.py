@@ -12,6 +12,7 @@ from ...attestation.trustchain.payload import HalfBlockPayload
 from ...attestation.trustchain.community import TrustChainCommunity
 from ...dht.community import DHTCommunity, MAX_ENTRY_SIZE
 from ...REST.dht_endpoint import DHTBlockEndpoint
+from ...messaging.serialization import Serializer
 
 
 class TestDHTEndpoint(RESTTestBase):
@@ -21,34 +22,57 @@ class TestDHTEndpoint(RESTTestBase):
 
     def setUp(self):
         super(TestDHTEndpoint, self).setUp()
-        self.initialize([(5, TestPeer)])
+        self.initialize([(2, TestPeer)])
+
+        self.serializer = Serializer()
 
     @inlineCallbacks
-    def test_added_block(self):
+    def publish_to_DHT(self, peer, key, data, numeric_version):
+        """
+        Publish data to the DHT via a peer
+
+        :param peer: the peer via which the data is published to the DHT
+        :param key: the key of the added data
+        :param data: the data itself; should be a string
+        :param numeric_version: the version of the data
+        :return: None
+        """
+        version = struct.pack("H", numeric_version)
+
+        for i in range(0, len(data), MAX_ENTRY_SIZE - 3):
+            blob_chunk = version + data[i:i + MAX_ENTRY_SIZE - 3]
+            yield peer.get_overlay_by_class(DHTCommunity).store_value(key, blob_chunk)
+
+    def deserialize_payload(self, serializables, data):
+        """
+        Deserialize data
+
+        :param serializables: the list of serializable formats
+        :param data: the serialized data
+        :return: The payload obtained from deserializing the data
+        """
+        payload = self.serializer.unpack_to_serializables(serializables, data)
+        return payload[:-1][0]
+
+    @inlineCallbacks
+    def test_added_block_explicit(self):
+        """
+        Test the publication of a block which has been added by hand
+        """
         param_dict = {
             'port': self.peer_list[0].port,
             'interface': self.peer_list[0].interface,
             'endpoint': 'dht/block',
             'public_key': string_to_url(b64encode(self.peer_list[0].get_keys()['my_peer'].mid))
         }
+        # Introduce the nodes
         yield self.introduce_nodes(DHTCommunity)
 
         # Manually add a block to the Trustchain
         original_block = TestBlock()
-        packed_block = original_block.pack()
-        version = struct.pack("H", 4536)
-        hash_key = sha1(self.peer_list[0].get_keys()['my_peer'].mid + DHTBlockEndpoint.KEY_SUFFIX).hexdigest()
+        hash_key = sha1(self.peer_list[0].get_keys()['my_peer'].mid + DHTBlockEndpoint.KEY_SUFFIX).digest()
 
-        for i in range(0, len(packed_block), MAX_ENTRY_SIZE - 3):
-            blob_chunk = version + packed_block[i:i + MAX_ENTRY_SIZE - 3]
-            yield self.peer_list[0].get_overlay_by_class(DHTCommunity).store_value(hash_key, blob_chunk)
-
-        res = self.peer_list[0].get_overlay_by_class(DHTCommunity).storage.get(hash_key)
-        print "Home ", res
-        res = self.peer_list[1].get_overlay_by_class(DHTCommunity).storage.get(hash_key)
-        print "Home ", res
-
-        # return
+        yield self.publish_to_DHT(self.peer_list[0], hash_key, original_block.pack(), 4536)
 
         # Get the block through the REST API
         response = yield self._get_style_requests.make_dht_block(param_dict)
@@ -56,10 +80,8 @@ class TestDHTEndpoint(RESTTestBase):
         response = b64decode(response[b'block'])
 
         # Reconstruct the block from what was received in the response
-        payload = self.peer_list[0].get_overlay_by_class(DHTCommunity).serializer\
-            .unpack_to_serializables((HalfBlockPayload, ), response)
-        payload = payload[:-1][0]
+        payload = self.deserialize_payload((HalfBlockPayload, ), response)
         reconstructed_block = self.peer_list[0].get_overlay_by_class(TrustChainCommunity).get_block_class(payload.type)\
-            .from_payload(payload, self.peer_list[0].get_overlay_by_class(TrustChainCommunity).serializer)
+            .from_payload(payload, self.serializer)
 
         self.assertEqual(reconstructed_block, original_block, "The received block was not the one which was expected")

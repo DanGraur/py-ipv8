@@ -46,7 +46,7 @@ class DHTBlockEndpoint(resource.Resource):
         self.trustchain = trustchain
         self.block_version = 0
 
-        self._hashed_dht_key = sha1(self.trustchain.my_peer.mid + self.KEY_SUFFIX).hexdigest()
+        self._hashed_dht_key = sha1(self.trustchain.my_peer.mid + self.KEY_SUFFIX).digest()
 
         trustchain.set_new_block_cb(self.publish_latest_block)
 
@@ -86,7 +86,7 @@ class DHTBlockEndpoint(resource.Resource):
             request.setResponseCode(http.BAD_REQUEST)
             return json.dumps({"error": "Must specify the peer's public key"}).encode('utf-8')
 
-        hash_key = sha1(b64decode(request.args[b'public_key'][0]) + self.KEY_SUFFIX).hexdigest()
+        hash_key = sha1(b64decode(request.args[b'public_key'][0]) + self.KEY_SUFFIX).digest()
         block_chunks = self.dht.storage.get(hash_key)
 
         if not block_chunks:
@@ -104,8 +104,6 @@ class DHTBlockEndpoint(resource.Resource):
                 new_blocks[this_version] = entry[3:] + new_blocks[this_version]
             else:
                 new_blocks[this_version] = entry[3:]
-
-        print "***********************************************************************Away ", new_blocks[max_version]
 
         return json.dumps({b"block": b64encode(new_blocks[max_version])}).encode('utf-8')
 
