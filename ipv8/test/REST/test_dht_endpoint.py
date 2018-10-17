@@ -117,3 +117,40 @@ class TestDHTEndpoint(RESTTestBase):
             .from_payload(payload, self.serializer)
 
         self.assertEqual(reconstructed_block, original_block, "The received block was not the one which was expected")
+
+    @inlineCallbacks
+    def test_latest_block(self):
+        """
+        Test the retrieval of the latest block via the DHT, when there is
+        more than one block in the DHT under the same key
+        """
+        param_dict = {
+            'port': self.peer_list[1].port,
+            'interface': self.peer_list[1].interface,
+            'endpoint': 'dht/block',
+            'public_key': string_to_url(b64encode(self.peer_list[0].get_keys()['my_peer'].mid))
+        }
+        # Introduce the nodes
+        yield self.introduce_nodes(DHTCommunity)
+
+        # Manually add a block to the Trustchain
+        original_block_1 = TestBlock(transaction={1: 'asd'})
+        original_block_2 = TestBlock(transaction={1: 'mmm'})
+        hash_key = sha1(self.peer_list[0].get_keys()['my_peer'].mid + DHTBlockEndpoint.KEY_SUFFIX).digest()
+
+        # Publish the two blocks under the same key in the first peer
+        yield self.publish_to_DHT(self.peer_list[0], hash_key, original_block_1.pack(), 4536)
+        yield self.publish_to_DHT(self.peer_list[0], hash_key, original_block_2.pack(), 7636)
+
+        # Get the block through the REST API from the second peer
+        response = yield self._get_style_requests.make_dht_block(param_dict)
+        self.assertTrue(b'block' in response and response[b'block'], "Response is not as expected: {}".format(response))
+        response = b64decode(response[b'block'])
+
+        # Reconstruct the block from what was received in the response
+        payload = self.deserialize_payload((HalfBlockPayload,), response)
+        reconstructed_block = self.peer_list[0].get_overlay_by_class(TrustChainCommunity).get_block_class(
+            payload.type).from_payload(payload, self.serializer)
+
+        self.assertEqual(reconstructed_block, original_block_2, "The received block was not equal to the latest block")
+        self.assertNotEqual(reconstructed_block, original_block_1, "The received block was equal to the older block")
