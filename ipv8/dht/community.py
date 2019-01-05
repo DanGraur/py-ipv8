@@ -112,6 +112,8 @@ class DHTCommunity(Community):
         self.register_task('value_maintenance', LoopingCall(self.value_maintenance)).start(3600, now=False)
         self.register_task('token_maintenance', LoopingCall(self.token_maintenance)).start(300, now=True)
 
+        self.store_request_callback = None
+
         # Register messages
         self.decode_map.update({
             chr(MSG_PING): self.on_ping_request,
@@ -272,6 +274,15 @@ class DHTCommunity(Community):
         return gatherResponses(deferreds, consumeErrors=True) \
                if deferreds else fail(RuntimeError('Value was not stored'))
 
+    def set_store_request_callback(self, f):
+        """
+        Set the callback function associated to the on_store_request.
+
+        :param f: f is the callback function of on_store_request. f : str -> None. The string here is the key.
+        :return: None
+        """
+        self.store_request_callback = f
+
     @lazy_wrapper(GlobalTimeDistributionPayload, StoreRequestPayload)
     def on_store_request(self, peer, dist, payload):
         self.logger.debug('Got store-request from %s', peer.address)
@@ -300,6 +311,10 @@ class DHTCommunity(Community):
         # To prevent over-caching, the expiration time of an entry depends on the number
         # of nodes that are closer than us.
         max_age = MAX_ENTRY_AGE // 2 ** max(0, num_closer - TARGET_NODES + 1)
+
+        # We'll now call the callback of the on_store_request event
+        self.store_request_callback(payload.target)
+
         for value in payload.values:
             self.add_value(payload.target, value, max_age)
 
